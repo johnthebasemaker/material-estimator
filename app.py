@@ -2,7 +2,8 @@
 Smart Material Estimator · app.py (v3)
 Run: streamlit run app.py
 """
-import io, os, sys
+import io, os, sys, sqlite3
+from datetime import date, datetime
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -23,6 +24,7 @@ PATH_B   = os.path.join(BASE_DIR, "For_1_SQM.xlsx")
 PATH_C   = os.path.join(BASE_DIR, "Equipment.xlsx")
 SHEET_A, SHEET_B, SHEET_C = "Materials", "LINING SYSTEM MATERIAL CONSM", "Data Input"
 LOCATION_ORDER = ["Brown Field", "TRAIN J", "TRAIN K"]
+DB_PATH = os.path.join(BASE_DIR, "sme_database.db")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STYLES
@@ -182,47 +184,133 @@ if not st.session_state["_authenticated"]:
     st.stop()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA LOADER
+# DATABASE HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+def db_available():
+    return os.path.exists(DB_PATH)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA LOADER  (SQLite when available, fallback to Excel)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner="Loading project data…")
 def load_all():
-    df_a_raw = pd.read_excel(PATH_A, sheet_name=SHEET_A)
-    df_b_raw = pd.read_excel(PATH_B, sheet_name=SHEET_B)
-    df_c_raw = pd.read_excel(PATH_C, sheet_name=SHEET_C)
+    if db_available():
+        conn = get_db()
+        inv = pd.read_sql(
+            "SELECT material_code AS Material_Code, material_name AS Material_Name, "
+            "nature AS Nature, uom AS UOM, "
+            "available_qty AS Available_Qty, ordered_qty AS Ordered_Qty "
+            "FROM inventory", conn)
 
-    inv    = clean_inventory(df_a_raw)
-    recipe = clean_recipe(df_b_raw)
-    equip  = clean_equipment(df_c_raw)
+        recipe = pd.read_sql(
+            "SELECT lining_system_code AS Lining_System_Code, "
+            "lining_system_short_name AS Lining_System_Short_Name, "
+            "lining_type AS Lining_Type, material_code AS Material_Code, "
+            "material_description AS Material_Description, "
+            "material_name AS Material_Name, for_1_sqm AS For_1_SQM, uom AS UOM "
+            "FROM recipe", conn)
 
-    # ── (Tag, SysCode) SQM totals — sums multi-area rows correctly ────────
-    equip_sc = equip.groupby(
-        ["Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name"],
-        as_index=False
-    )["Surface_Area_SQM"].sum().rename(columns={"Surface_Area_SQM": "Total_SQM"})
+        equip_raw = pd.read_sql(
+            "SELECT location AS Location, type AS Type, "
+            "lining_system_code AS Lining_System_Code, "
+            "lining_system_short_name AS Lining_System_Short_Name, "
+            "lining_type AS Lining_Type, equipment_tag AS \"Equipment_Tag_No.\", "
+            "name AS Name, description AS Description, "
+            "material_spec AS \"Material Spec.\", design AS Design, "
+            "surface_area_sqm AS Surface_Area_SQM, lining_systems AS \"Lining_System+\" "
+            "FROM equipment", conn)
 
-    # ── Detailed demand matrix: (tag, sys_code, material) ─────────────────
-    dm = equip_sc.merge(recipe, on="Lining_System_Code", suffixes=("_e", "_r"))
+        sqm_prog = pd.read_sql(
+            "SELECT equipment_tag AS \"Equipment_Tag_No.\", "
+            "lining_system_code AS Lining_System_Code, "
+            "original_sqm, done_sqm, "
+            "(original_sqm - done_sqm) AS remaining_sqm "
+            "FROM sqm_progress", conn)
+        conn.close()
+
+        equip_sc = (equip_raw
+            .groupby(["Equipment_Tag_No.", "Lining_System_Code",
+                      "Lining_System_Short_Name"], as_index=False)
+            ["Surface_Area_SQM"].sum()
+            .rename(columns={"Surface_Area_SQM": "Total_SQM_Original"}))
+        equip_sc = equip_sc.merge(
+            sqm_prog[["Equipment_Tag_No.", "Lining_System_Code",
+                      "remaining_sqm", "done_sqm"]],
+            on=["Equipment_Tag_No.", "Lining_System_Code"], how="left")
+        equip_sc["remaining_sqm"] = equip_sc["remaining_sqm"].fillna(equip_sc["Total_SQM_Original"])
+        equip_sc["done_sqm"]      = equip_sc["done_sqm"].fillna(0)
+        equip_sc["Total_SQM"]     = equip_sc["remaining_sqm"]
+
+    else:
+        # Fallback: read from Excel using existing clean helpers
+        from validate_data import clean_inventory, clean_recipe, clean_equipment
+        df_a_raw = pd.read_excel(PATH_A, sheet_name=SHEET_A)
+        df_b_raw = pd.read_excel(PATH_B, sheet_name=SHEET_B)
+        df_c_raw = pd.read_excel(PATH_C, sheet_name=SHEET_C)
+        inv    = clean_inventory(df_a_raw)
+        recipe = clean_recipe(df_b_raw)
+        equip_raw = clean_equipment(df_c_raw)
+
+        inv_full = df_a_raw.copy()
+        inv_full.columns = inv_full.columns.str.strip()
+        inv_full["Material_Code"] = inv_full["Material_Code"].astype(str).str.strip()
+        ordered_col = next((c for c in inv_full.columns
+                            if c.strip() in ("Ordered_Qty","Balance To Be Received")), None)
+        if ordered_col:
+            inv_full[ordered_col] = pd.to_numeric(inv_full[ordered_col],errors="coerce").fillna(0)
+            inv_ordered = inv_full.groupby("Material_Code",as_index=False).agg(
+                Ordered_Qty=(ordered_col,"sum"))
+            inv = inv.merge(inv_ordered,on="Material_Code",how="left")
+            inv["Ordered_Qty"] = inv["Ordered_Qty"].fillna(0)
+        else:
+            inv["Ordered_Qty"] = 0.0
+
+        raw = df_c_raw.copy()
+        raw.columns = raw.columns.str.strip()
+        raw = raw.dropna(subset=["Equipment_Tag_No.","Lining_System_Code"])
+        raw["Equipment_Tag_No."] = raw["Equipment_Tag_No."].astype(str).str.strip()
+        raw["Location"]           = raw["Location"].astype(str).str.strip()
+        raw["Type"]               = raw["Type"].astype(str).str.strip()
+        raw["Surface_Area_SQM"]   = pd.to_numeric(raw["Surface_Area_SQM"],errors="coerce")
+        raw["Lining_System_Code"] = raw["Lining_System_Code"].astype(float).astype(int).astype(str)
+        for col in ["Name","Description","Lining_System_Short_Name"]:
+            if col in raw.columns:
+                raw[col] = raw[col].astype(str).str.strip()
+        equip_raw = raw
+
+        equip_sc = (equip_raw
+            .groupby(["Equipment_Tag_No.","Lining_System_Code","Lining_System_Short_Name"],
+                     as_index=False)["Surface_Area_SQM"].sum()
+            .rename(columns={"Surface_Area_SQM":"Total_SQM_Original"}))
+        equip_sc["done_sqm"]      = 0.0
+        equip_sc["remaining_sqm"] = equip_sc["Total_SQM_Original"]
+        equip_sc["Total_SQM"]     = equip_sc["Total_SQM_Original"]
+
+    # ── Demand matrix (uses remaining SQM) ───────────────────────────────
+    dm = equip_sc.merge(recipe, on="Lining_System_Code", suffixes=("_e","_r"))
     dm["Demand_Qty"] = dm["For_1_SQM"] * dm["Total_SQM"]
     if "Lining_System_Short_Name_e" in dm.columns:
-        dm = dm.rename(columns={"Lining_System_Short_Name_e": "Lining_System_Short_Name"})
-        dm.drop(columns=["Lining_System_Short_Name_r"], inplace=True, errors="ignore")
-    dm = dm[["Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name",
-             "Total_SQM", "Material_Code", "Material_Name", "UOM", "Demand_Qty"]]
+        dm = dm.rename(columns={"Lining_System_Short_Name_e":"Lining_System_Short_Name"})
+        dm.drop(columns=["Lining_System_Short_Name_r"],inplace=True,errors="ignore")
+    dm = dm[["Equipment_Tag_No.","Lining_System_Code","Lining_System_Short_Name",
+             "Total_SQM","Material_Code","Material_Name","UOM","Demand_Qty"]]
 
-    # ── Equipment master (one row per tag) ─────────────────────────────────
-    raw = df_c_raw.copy()
-    raw.columns = raw.columns.str.strip()
-    raw = raw.dropna(subset=["Equipment_Tag_No.", "Lining_System_Code"])
-    raw["Equipment_Tag_No."] = raw["Equipment_Tag_No."].astype(str).str.strip()
-    raw["Location"] = raw["Location"].astype(str).str.strip()
-    raw["Type"]     = raw["Type"].astype(str).str.strip()
-    raw["Surface_Area_SQM"] = pd.to_numeric(raw["Surface_Area_SQM"], errors="coerce")
-    eq_master = raw.groupby("Equipment_Tag_No.", as_index=False).agg(
+    # ── Equipment master ─────────────────────────────────────────────────
+    eq_master = equip_raw.groupby("Equipment_Tag_No.", as_index=False).agg(
         Name          =("Name",          "first"),
         Description   =("Description",   "first"),
         Location      =("Location",      "first"),
         Type          =("Type",          "first"),
         Lining_Systems=("Lining_System+","first"),
+        Lining_Type   =("Lining_Type",   "first"),
         Material_Spec =("Material Spec.","first"),
         Design        =("Design",        "first"),
         Total_SQM     =("Surface_Area_SQM","sum"),
@@ -230,32 +318,9 @@ def load_all():
     eq_master["Location"] = eq_master["Location"].str.strip()
     eq_master["Type"]     = eq_master["Type"].str.strip()
 
-    # ── Inventory with Ordered_Qty (map Balance To Be Received or Ordered_Qty) ─
-    inv_full = df_a_raw.copy()
-    inv_full.columns = inv_full.columns.str.strip()
-    inv_full["Material_Code"] = inv_full["Material_Code"].astype(str).str.strip()
-    # Support both column names: user may rename to Ordered_Qty or keep original
-    if "Ordered_Qty" in inv_full.columns:
-        ordered_col = "Ordered_Qty"
-    elif "Balance To Be Received" in inv_full.columns:
-        ordered_col = "Balance To Be Received"
-    else:
-        ordered_col = None
-
-    if ordered_col:
-        inv_full[ordered_col] = pd.to_numeric(inv_full[ordered_col], errors="coerce").fillna(0)
-        inv_ordered = (
-            inv_full.groupby("Material_Code", as_index=False)
-            .agg(Ordered_Qty=(ordered_col, "sum"))
-        )
-        inv = inv.merge(inv_ordered, on="Material_Code", how="left")
-        inv["Ordered_Qty"] = inv["Ordered_Qty"].fillna(0)
-    else:
-        inv["Ordered_Qty"] = 0.0
-
-    # ── SQM reference table: (tag, sys_code) → correct unique SQM ────────────
-    # equip_sc is ground truth — never sum Total_SQM from dm (it duplicates per material)
-    sqm_ref = equip_sc[["Equipment_Tag_No.","Lining_System_Code","Total_SQM"]].drop_duplicates()
+    # ── SQM reference (includes done_sqm for progress tracking) ─────────
+    sqm_ref = equip_sc[["Equipment_Tag_No.","Lining_System_Code",
+                         "Total_SQM","Total_SQM_Original","done_sqm"]].drop_duplicates()
 
     return inv, recipe, equip_sc, dm, eq_master, sqm_ref
 
@@ -288,19 +353,12 @@ def fulfil_pill(pct):
     cls = "pill-g" if pct>=100 else "pill-o" if pct>=90 else "pill-y" if pct>=80 else "pill-r"
     return f'<span class="pill {cls}">{pct:.1f}%</span>'
 
-def cascade_allocate(tag_order: list[str]) -> pd.DataFrame:
-    """
-    Cascade inventory pool through equipment in order.
-    Pool is GLOBAL per material (not per system code).
-    Returns df with columns:
-      Equipment_Tag_No. | Lining_System_Code | Lining_System_Short_Name |
-      Total_SQM | Material_Code | Material_Name | UOM |
-      Demand_Qty | Allocated_Qty | Shortfall_Qty | Fulfillment_Pct |
-      Pool_Before | Pool_After
-    """
+@st.cache_data(show_spinner=False)
+def _cached_cascade_allocate(tag_order_tuple: tuple) -> pd.DataFrame:
+    """Cached worker for cascade_allocate"""
     pool = dict(INV_POOL_INIT)  # mutable copy
     rows = []
-    for tag in tag_order:
+    for tag in tag_order_tuple:
         tag_dm = dm[dm["Equipment_Tag_No."] == tag].copy()
         # Process system codes in numeric order for consistency
         for code in sorted(tag_dm["Lining_System_Code"].unique(), key=lambda x: int(x)):
@@ -333,6 +391,14 @@ def cascade_allocate(tag_order: list[str]) -> pd.DataFrame:
             result["Allocated_Qty"] / result["Demand_Qty"].replace(0, np.nan) * 100
         ).fillna(100).clip(0, 100).round(2)
     return result
+
+def cascade_allocate(tag_order: list[str]) -> pd.DataFrame:
+    """
+    Cascade inventory pool through equipment in order.
+    Pool is GLOBAL per material (not per system code).
+    """
+    # Convert list to tuple so Streamlit's cache engine can hash it safely
+    return _cached_cascade_allocate(tuple(tag_order))
 
 def tag_fulfillment(alloc_df: pd.DataFrame, tag: str) -> float:
     t = alloc_df[alloc_df["Equipment_Tag_No."] == tag]
@@ -369,11 +435,86 @@ def sqm_can_do(alloc_df: pd.DataFrame, tag: str, code: str) -> tuple[float, floa
     return round(total_sqm, 2), can, short
 
 
-def excel_bytes(df: pd.DataFrame) -> bytes:
+def excel_bytes(df: pd.DataFrame, report_title: str = "",
+                add_grand_total: bool = False) -> bytes:
+    """
+    Export df to Excel with:
+    - Row 1: report_title (merged, bold, large font) if provided
+    - Row 2: column headers (bold, background fill)
+    - Rows 3+: data
+    - Last row: GRAND TOTAL (bold, summing numeric columns) if add_grand_total=True
+    """
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        df.to_excel(w, index=False)
-    return buf.getvalue()
+    out_df = df.copy()
+
+    # ── Grand total row ───────────────────────────────────────────────────
+    if add_grand_total and len(out_df) > 0:
+        num_cols = out_df.select_dtypes(include="number").columns.tolist()
+        total_row = {c: "" for c in out_df.columns}
+        total_row[out_df.columns[0]] = "GRAND TOTAL"
+        for c in num_cols:
+            try:
+                total_row[c] = out_df[c].sum()
+            except Exception:
+                pass
+        out_df = pd.concat([out_df, pd.DataFrame([total_row])], ignore_index=True)
+
+    # ── Write to buffer ───────────────────────────────────────────────────
+    if report_title:
+        # Write title row first, then data
+        title_df = pd.DataFrame([[report_title]])
+        title_df.to_excel(buf, index=False, header=False, engine="openpyxl", startrow=0)
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            title_df.to_excel(w, index=False, header=False, startrow=0)
+            out_df.to_excel(w, index=False, header=True, startrow=1)
+
+        buf.seek(0)
+        wb = load_workbook(buf)
+        ws = wb.active
+        n_cols = len(out_df.columns)
+
+        # Style title row (row 1)
+        ws.merge_cells(start_row=1, start_column=1,
+                       end_row=1, end_column=n_cols)
+        title_cell = ws.cell(1, 1)
+        title_cell.font      = Font(bold=True, size=13, color="FFFFFF")
+        title_cell.fill      = PatternFill("solid", fgColor="1A2A3A")
+        title_cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 22
+
+        # Style header row (row 2)
+        for col in range(1, n_cols + 1):
+            cell = ws.cell(2, col)
+            cell.font      = Font(bold=True, size=10, color="FFFFFF")
+            cell.fill      = PatternFill("solid", fgColor="2D4A6A")
+            cell.alignment = Alignment(horizontal="center")
+
+        # Style grand total row (last row)
+        if add_grand_total:
+            last_row = ws.max_row
+            for col in range(1, n_cols + 1):
+                cell = ws.cell(last_row, col)
+                cell.font = Font(bold=True, size=10)
+                cell.fill = PatternFill("solid", fgColor="F0C040")
+
+        # Auto-width columns
+        for col in range(1, n_cols + 1):
+            max_len = max(
+                (len(str(ws.cell(r, col).value or ""))
+                 for r in range(1, ws.max_row + 1)), default=8)
+            ws.column_dimensions[get_column_letter(col)].width = min(max_len + 3, 40)
+
+        out_buf = io.BytesIO()
+        wb.save(out_buf)
+        return out_buf.getvalue()
+    else:
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            out_df.to_excel(w, index=False)
+        return buf.getvalue()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SUGGESTION ENGINE
@@ -467,8 +608,7 @@ def render_suggestion_panel(tag_list: list[str], panel_key: str) -> None:
     sc_sugg = result["sc_suggestions"]
 
     if not eq_sugg and not sc_sugg:
-        st.info("No meaningful reordering improvement found with current inventory levels.")
-        return
+        return  # hide silently when no improvements found
 
     c_eq, c_sc = st.columns(2, gap="large")
 
@@ -569,15 +709,18 @@ def plotly_mat_table(df: pd.DataFrame, key_suffix: str, height: int = 380,
     }
     df2 = df2.rename(columns=rename_map)
 
-    # SQM columns (inserted after qty columns)
+    # SQM columns — per-material, based on each material's own fulfillment
     if show_sqm and tag and code:
-        total_sqm, can_sqm, short_sqm = sqm_can_do(df, tag, code)
-        pct_sqm = (can_sqm / total_sqm * 100) if total_sqm > 0 else 100
-        # Add SQM rows as constant columns
-        df2["SQM Total"]   = total_sqm
-        df2["SQM Done"]    = can_sqm
-        df2["SQM Deficit"] = short_sqm
-        df2["SQM Done %"]  = round(pct_sqm, 1)
+        total_sqm_sc = sqm_ref[
+            (sqm_ref["Equipment_Tag_No."]==tag) &
+            (sqm_ref["Lining_System_Code"]==code)
+        ]["Total_SQM"].sum()
+        # Each material gets SQM proportional to its own fulfillment rate
+        mat_fulfill = df["Fulfillment_Pct"].values / 100.0 if "Fulfillment_Pct" in df.columns else                       (df["Allocated_Qty"] / df["Demand_Qty"].replace(0, np.nan)).fillna(1.0).clip(0,1).values
+        df2["SQM Total"]   = round(total_sqm_sc, 2)
+        df2["SQM Done"]    = (total_sqm_sc * mat_fulfill).round(2)
+        df2["SQM Deficit"] = (total_sqm_sc * (1 - mat_fulfill)).round(2)
+        df2["SQM Done %"]  = (mat_fulfill * 100).round(1)
 
     # Pre-computed per-row SQM columns (for combined/aggregated tables)
     elif {"SQM_Total","SQM_Done","SQM_Deficit"}.issubset(df.columns):
@@ -693,12 +836,13 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab_consume, tab5 = st.tabs([
     "📊  Dashboard",
     "🔍  Equipment Entry",
     "📦  Session Order Report",
     "📍  Location Report",
     "⚙️  Execution Plan",
+    "📝  Daily Consumption",
     "📈  Total Overview",
 ])
 
@@ -795,13 +939,20 @@ with tab0:
 
         # KPI strip
         k1,k2,k3,k4,k5,k6,k7 = st.columns(7)
-        k1.metric("Equipment",         len(filtered_tags))
-        k2.metric("Total SQM",         f"{proj_sqm:,.1f}")
-        k3.metric("SQM Achievable",    f"{can_sqm:,.1f}  ({f_cov:.0f}%)")
-        k4.metric("SQM Deficit",       f"{short_sqm:,.1f}")
-        k5.metric("Overall Coverage",  f"{f_cov:.1f}%", delta=f"{f_cov-100:.1f}%")
-        k6.metric("Total Shortfall",   f"{f_total_short:,.0f}")
-        k7.metric("Critical (<50%)",   int((f_demand["Coverage_Pct"]<50).sum()))
+        k1.metric("Equipment", len(filtered_tags),
+                  help="Equipment tags matching current filter selection.")
+        k2.metric("Total SQM", f"{proj_sqm:,.1f}",
+                  help="Remaining surface area (m²) after deducting daily consumption entries.")
+        k3.metric("SQM Achievable", f"{can_sqm:,.1f}  ({f_cov:.0f}%)",
+                  help="SQM completable with current Available Qty = Total SQM × Coverage %.")
+        k4.metric("SQM Deficit", f"{short_sqm:,.1f}",
+                  help="SQM we cannot complete due to material shortfalls = Total − Achievable.")
+        k5.metric("Overall Coverage", f"{f_cov:.1f}%", delta=f"{f_cov-100:.1f}%",
+                  help="Allocated Qty ÷ Demand Qty × 100 across all filtered materials.")
+        k6.metric("Total Shortfall", f"{f_total_short:,.0f}",
+                  help="Sum of all material units short (Demand − Available, clipped at 0).")
+        k7.metric("Critical (<50%)", int((f_demand["Coverage_Pct"]<50).sum()),
+                  help="Materials where Available Qty covers less than 50% of total demand.")
         st.markdown("<br>", unsafe_allow_html=True)
 
         row1a, row1b = st.columns([1,1.6], gap="large")
@@ -1364,20 +1515,29 @@ with tab1:
                 can_sqm  = round(tag_total_sqm * min(1.0, pct/100), 2)
                 row_c, row_x = st.columns([9, 1])
                 with row_c:
-                    st.markdown(
-                        f'<div class="session-equip" style="margin-bottom:.22rem;">'
-                        f'<span class="{dot}" style="font-family:\'JetBrains Mono\','
-                        f'monospace;font-size:.75rem;font-weight:600;color:var(--t1);">'
-                        f'{t}</span>'
-                        f'<span style="font-size:.76rem;color:var(--t3);margin-left:.5rem;">'
-                        f'{name[:26]}</span>'
+                    # Append system codes to session list display
+                    _t_codes = sorted(
+                        dm[dm["Equipment_Tag_No."]==t]["Lining_System_Code"].unique(),
+                        key=lambda x: int(x))
+                    _codes_badges = "  ".join(
                         f'<span style="font-family:\'JetBrains Mono\',monospace;'
-                        f'font-size:.63rem;color:var(--t4);margin-left:.4rem;">{loc}</span>'
-                        f'<span style="float:right;font-family:\'JetBrains Mono\','
-                        f'monospace;font-size:.65rem;color:var(--t3);">'
-                        f'{can_sqm:,.1f}/{tag_total_sqm:,.1f} SQM&nbsp;&nbsp;</span>'
-                        f'<span style="float:right;">{fulfil_pill(pct)}</span>'
-                        f'</div>', unsafe_allow_html=True)
+                        f'font-size:.58rem;background:rgba(245,158,11,.15);'
+                        f'color:var(--amber);border-radius:3px;padding:.1rem .3rem;">C{c}</span>'
+                        for c in _t_codes)
+                    _sess_parts = [
+                        f'<div class="session-equip" style="margin-bottom:.22rem;">',
+                        f'<span class="{dot}" style="font-family:JetBrains Mono,monospace;',
+                        f'font-size:.75rem;font-weight:600;color:var(--t1);">{t}</span>',
+                        f'<span style="font-size:.75rem;color:var(--t3);margin-left:.5rem;">{name[:22]}</span>',
+                        f'<span style="margin-left:.4rem;">{_codes_badges}</span>',
+                        f'<span style="font-family:JetBrains Mono,monospace;',
+                        f'font-size:.62rem;color:var(--t4);margin-left:.4rem;">{loc}</span>',
+                        f'<span style="float:right;font-family:JetBrains Mono,monospace;',
+                        f'font-size:.64rem;color:var(--t3);">{can_sqm:,.1f}/{tag_total_sqm:,.1f} SQM&nbsp;&nbsp;</span>',
+                        f'<span style="float:right;">{fulfil_pill(pct)}</span>',
+                        '</div>',
+                    ]
+                    st.markdown("".join(_sess_parts), unsafe_allow_html=True)
                 with row_x:
                     if st.button("✕", key=f"rm_{t}_{idx_t}", help=f"Remove {t}"):
                         st.session_state.session_tags.remove(t)
@@ -1467,7 +1627,7 @@ with tab1:
                 with st.expander(
                     f"System Code {code}  ·  {sname}  ·  {sqm:,.2f} SQM  "
                     f"·  Coverage: {pct:.1f}%",
-                    expanded=True,
+                    expanded=False,
                 ):
                     mi1,mi2,mi3,mi4 = st.columns(4)
                     mi1.metric("System Code",   code)
@@ -1829,6 +1989,13 @@ with tab3:
 
         # Compute quick fulfillment with CURRENT order for labels only
         loc_alloc_preview = cascade_allocate(loc_tags_all)
+
+        # ── Location title above sortable list ──────────────────────────────
+        st.markdown(
+            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:.68rem;'
+            f'font-weight:700;letter-spacing:.1em;color:var(--amber);margin-bottom:.3rem;">'
+            f'📍 {loc} — Drag to set build priority</div>',
+            unsafe_allow_html=True)
 
         # Static labels — no % to keep component state stable across reruns
         def _l3_label(i, t):
@@ -2302,216 +2469,569 @@ with tab4:
                 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 · TOTAL OVERVIEW
+# TAB: DAILY CONSUMPTION ENTRY
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_consume:
+    st.markdown('<div class="sec-hdr">📝 Daily Consumption Entry — Record actual site production</div>',
+                unsafe_allow_html=True)
+
+    if not db_available():
+        st.error("Database not found. Run `python setup_db.py` first to initialise the database.")
+        st.stop()
+
+    # ── Cascading dropdowns: Location → Type → Equipment → System Code ────────
+    st.markdown('<div class="sec-hdr">Step 1 — Select Work Location & Equipment</div>',
+                unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        ce_loc = st.selectbox("📍 Location", options=[""] + LOCATION_ORDER,
+                              key="ce_loc", label_visibility="visible")
+    with col2:
+        if ce_loc:
+            type_opts = sorted(
+                eq_master[eq_master["Location"]==ce_loc]["Type"].dropna().unique().tolist())
+        else:
+            type_opts = sorted(eq_master["Type"].dropna().unique().tolist())
+        ce_type = st.selectbox("🏷 Type", options=[""] + type_opts,
+                               key="ce_type", label_visibility="visible")
+    with col3:
+        eq_filter = eq_master.copy()
+        if ce_loc:  eq_filter = eq_filter[eq_filter["Location"]==ce_loc]
+        if ce_type: eq_filter = eq_filter[eq_filter["Type"]==ce_type]
+        tag_opts = sorted(eq_filter["Equipment_Tag_No."].tolist())
+        ce_tag = st.selectbox("🔩 Equipment Tag", options=[""] + tag_opts,
+                              format_func=lambda t: "" if t=="" else _eq_label(t),
+                              key="ce_tag", label_visibility="visible")
+    with col4:
+        if ce_tag:
+            code_opts = sorted(
+                equip_sc[equip_sc["Equipment_Tag_No."]==ce_tag]["Lining_System_Code"].unique(),
+                key=lambda x: int(x))
+            code_labels = [
+                f"Code {c}  –  {equip_sc[(equip_sc['Equipment_Tag_No.']==ce_tag)&(equip_sc['Lining_System_Code']==c)]['Lining_System_Short_Name'].iloc[0]}"
+                for c in code_opts]
+        else:
+            code_opts, code_labels = [], []
+        ce_code_raw = st.selectbox("⚙️ System Code", options=[""] + code_labels,
+                                   key="ce_code", label_visibility="visible")
+        ce_code = ce_code_raw.split("  –  ")[0].replace("Code ","").strip() if ce_code_raw else ""
+
+    # ── SQM Entry ──────────────────────────────────────────────────────────────
+    if ce_tag and ce_code:
+        st.markdown("<hr>", unsafe_allow_html=True)
+        st.markdown('<div class="sec-hdr">Step 2 — Enter SQM Completed Today</div>',
+                    unsafe_allow_html=True)
+
+        # Get remaining SQM for this (tag, code)
+        sqm_row = sqm_ref[
+            (sqm_ref["Equipment_Tag_No."]==ce_tag) &
+            (sqm_ref["Lining_System_Code"]==ce_code)]
+        total_sqm_orig  = float(sqm_row["Total_SQM_Original"].iloc[0]) if not sqm_row.empty else 0
+        done_sqm_prev   = float(sqm_row["done_sqm"].iloc[0]) if not sqm_row.empty else 0
+        remaining_sqm   = max(0.0, total_sqm_orig - done_sqm_prev)
+        sname           = (equip_sc[(equip_sc["Equipment_Tag_No."]==ce_tag) &
+                                    (equip_sc["Lining_System_Code"]==ce_code)]
+                           ["Lining_System_Short_Name"].iloc[0]
+                           if not sqm_row.empty else ce_code)
+
+        sc1,sc2,sc3,sc4 = st.columns(4)
+        sc1.metric("System Code",       sname)
+        sc2.metric("Original SQM",      f"{total_sqm_orig:,.2f}")
+        sc3.metric("Already Done SQM",  f"{done_sqm_prev:,.2f}")
+        sc4.metric("Remaining SQM",     f"{remaining_sqm:,.2f}",
+                   help="Remaining = Original − already completed")
+
+        # ── Pre-load recipe before form ───────────────────────────────────────
+        sc_recipe = recipe[recipe["Lining_System_Code"]==ce_code].copy()
+        sc_recipe = sc_recipe.merge(
+            inv[["Material_Code","Available_Qty","Ordered_Qty"]],
+            on="Material_Code", how="left")
+        sc_recipe["Available_Qty"] = sc_recipe["Available_Qty"].fillna(0)
+        sc_recipe["Ordered_Qty"]   = sc_recipe["Ordered_Qty"].fillna(0)
+
+        if sc_recipe.empty:
+            st.warning(f"No recipe found for System Code {ce_code}.")
+        else:
+            st.markdown("<hr>", unsafe_allow_html=True)
+            # ── All inputs in one form → no per-keystroke reruns ──────────────
+            with st.form(key="ce_form", clear_on_submit=True):
+                st.markdown('<div class="sec-hdr">Step 2 — Enter SQM Completed Today</div>',
+                            unsafe_allow_html=True)
+                col_date, col_sqm = st.columns(2)
+                with col_date:
+                    ce_date_form = st.date_input("📅 Work Date", value=date.today(),
+                                                 key="form_ce_date")
+                with col_sqm:
+                    ce_sqm_form = st.number_input(
+                        "SQM Completed Today",
+                        min_value=0.0, max_value=float(remaining_sqm),
+                        value=0.0, step=0.5, format="%.2f",
+                        key="form_ce_sqm",
+                        help=f"Maximum {remaining_sqm:,.2f} m² remaining")
+
+                st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">'
+                            'Step 3 — Material Quantities Consumed</div>',
+                            unsafe_allow_html=True)
+                st.caption(
+                    "Actual Consumed defaults to For_1_SQM × SQM if left at 0. "
+                    "Override with actual site usage if different.")
+
+                # Table header
+                h1,h2,h3,h4,h5,h6,h7 = st.columns([2,3,1,1.5,1.5,1.5,1.5])
+                for hdr, col in zip(
+                    ["Code","Material Name","UOM","Available",
+                     "For 1 SQM","Actual Consumed","On Order"],
+                    [h1,h2,h3,h4,h5,h6,h7]
+                ):
+                    col.markdown(f"**{hdr}**")
+                st.markdown("---")
+
+                mat_inputs = {}
+                for _, mrow in sc_recipe.iterrows():
+                    mc    = str(mrow["Material_Code"])
+                    for_1 = float(mrow.get("For_1_SQM", 0) or 0)
+                    avail = float(mrow.get("Available_Qty", 0) or 0)
+                    onord = float(mrow.get("Ordered_Qty",  0) or 0)
+                    c1,c2,c3,c4,c5,c6,c7 = st.columns([2,3,1,1.5,1.5,1.5,1.5])
+                    c1.markdown(f"<code>{mc}</code>", unsafe_allow_html=True)
+                    c2.write(str(mrow.get("Material_Name", "")))
+                    c3.write(str(mrow.get("UOM", "")))
+                    c4.write(f"{avail:,.2f}")
+                    c5.write(f"{for_1:,.4f}")
+                    actual = c6.number_input(
+                        "qty", min_value=0.0, value=0.0,
+                        step=0.001, format="%.4f",
+                        key=f"form_mat_{mc}",
+                        label_visibility="collapsed")
+                    c7.write(f"{onord:,.2f}")
+                    mat_inputs[mc] = {
+                        "material_name": str(mrow.get("Material_Name", "")),
+                        "uom":           str(mrow.get("UOM", "")),
+                        "for_1_sqm":     for_1,
+                        "actual_input":  float(actual),
+                    }
+
+                ce_notes_form = st.text_area(
+                    "📝 Notes (optional)",
+                    placeholder="Weather conditions, issues, remarks…",
+                    key="form_notes", height=70)
+
+                submit_btn = st.form_submit_button(
+                    "✅  Submit Daily Consumption",
+                    use_container_width=False)
+
+            # ── DB write — runs once on submit, not on every keypress ─────────
+            if submit_btn:
+                sqm_val  = st.session_state.get("form_ce_sqm",  0.0)
+                date_val = st.session_state.get("form_ce_date", date.today())
+                notes_val= st.session_state.get("form_notes",   "")
+                if sqm_val <= 0:
+                    st.error("Enter SQM Completed > 0 before submitting.")
+                elif sqm_val > remaining_sqm + 0.001:
+                    st.error(f"SQM ({sqm_val:.2f}) exceeds remaining ({remaining_sqm:.2f}).")
+                else:
+                    try:
+                        conn = get_db()
+                        cur  = conn.cursor()
+                        n_updated = 0
+                        for mc, vals in mat_inputs.items():
+                            # Auto-calc expected; use actual override if > 0
+                            expected_qty  = round(vals["for_1_sqm"] * sqm_val, 4)
+                            consumed_qty  = (vals["actual_input"]
+                                             if vals["actual_input"] > 0
+                                             else expected_qty)
+                            cur.execute("""
+                                INSERT INTO consumption_log
+                                  (entry_date, equipment_tag, lining_system_code,
+                                   lining_system_name, sqm_completed, material_code,
+                                   material_name, uom, expected_qty, consumed_qty, notes)
+                                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                            """, (str(date_val), ce_tag, ce_code, sname,
+                                  sqm_val, mc, vals["material_name"], vals["uom"],
+                                  expected_qty, consumed_qty, notes_val))
+                            if consumed_qty > 0:
+                                cur.execute("""
+                                    UPDATE inventory
+                                    SET available_qty = MAX(0, available_qty - ?)
+                                    WHERE material_code = ?
+                                """, (consumed_qty, mc))
+                                n_updated += 1
+                        # Update SQM progress — deduct done_sqm from remaining
+                        cur.execute("""
+                            UPDATE sqm_progress
+                            SET done_sqm = done_sqm + ?
+                            WHERE equipment_tag = ? AND lining_system_code = ?
+                        """, (sqm_val, ce_tag, ce_code))
+                        conn.commit()
+                        conn.close()
+                        # Clear cache so Dashboard / Location / Total Overview refresh
+                        st.cache_data.clear()
+                        st.success(
+                            f"✅ {sqm_val:.2f} SQM recorded for {ce_tag} · "
+                            f"Code {ce_code} ({sname}).  "
+                            f"{n_updated} material(s) deducted from inventory.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Database error: {e}")
+
+    # ── Receipt Log ──────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("📦 Record Material Receipt (New Stock Received)", expanded=False):
+        st.caption("Use this to log when new materials arrive on site. "
+                   "Received quantities will be added to Available Inventory.")
+        if db_available():
+            with st.form(key="receipt_form", clear_on_submit=True):
+                rc1, rc2, rc3, rc4 = st.columns(4)
+                with rc1:
+                    rc_date = st.date_input("📅 Receipt Date", value=date.today(),
+                                            key="rc_date")
+                with rc2:
+                    mat_opts_r = inv["Material_Code"].tolist()
+                    rc_mat = st.selectbox(
+                        "🧪 Material",
+                        options=mat_opts_r,
+                        format_func=lambda m: f"{m}  –  "
+                            f"{inv.set_index('Material_Code')['Material_Name'].get(m,m)[:30]}",
+                        key="rc_mat")
+                with rc3:
+                    rc_qty = st.number_input("Qty Received", min_value=0.0,
+                                             value=0.0, step=1.0, format="%.2f",
+                                             key="rc_qty")
+                with rc4:
+                    rc_notes = st.text_input("Notes / PO Ref.", key="rc_notes",
+                                             placeholder="PO number, supplier…")
+                rc_submit = st.form_submit_button("➕  Record Receipt",
+                                                  use_container_width=False)
+
+            if rc_submit:
+                if rc_qty <= 0:
+                    st.error("Please enter a quantity > 0.")
+                else:
+                    try:
+                        conn = get_db()
+                        cur  = conn.cursor()
+                        # Insert receipt log
+                        cur.execute("""
+                            INSERT INTO receipt_log
+                              (entry_date, material_code, material_name,
+                               uom, received_qty, notes)
+                            SELECT ?, ?, material_name, uom, ?, ?
+                            FROM inventory WHERE material_code = ?
+                        """, (str(rc_date), rc_mat, rc_qty, rc_notes, rc_mat))
+                        # Add to Available_Qty
+                        cur.execute("""
+                            UPDATE inventory
+                            SET available_qty = available_qty + ?
+                            WHERE material_code = ?
+                        """, (rc_qty, rc_mat))
+                        conn.commit()
+                        conn.close()
+                        st.cache_data.clear()
+                        mat_name = inv.set_index("Material_Code")["Material_Name"].get(
+                            rc_mat, rc_mat)
+                        st.success(f"✅ Received {rc_qty:,.2f} units of {mat_name} "
+                                   f"added to inventory.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
+
+            # Show recent receipts as collapsible per-material items
+            if db_available():
+                conn = get_db()
+                rlog = pd.read_sql(
+                    "SELECT entry_date AS Date, material_code AS Code, "
+                    "material_name AS Material, uom AS UOM, "
+                    "received_qty AS \"Received Qty\", notes AS Notes, "
+                    "submitted_at AS \"Received At\" "
+                    "FROM receipt_log ORDER BY submitted_at DESC LIMIT 100", conn)
+                conn.close()
+                if not rlog.empty:
+                    st.markdown('<div class="sec-hdr" style="margin-top:.6rem;">'
+                                'Recent Receipts</div>', unsafe_allow_html=True)
+                    # Group by material code for cleaner display
+                    for mat_code, grp in rlog.groupby("Code", sort=False):
+                        mat_name = grp["Material"].iloc[0]
+                        total_recv = grp["Received Qty"].sum()
+                        latest = grp["Date"].iloc[0]
+                        with st.expander(
+                            f"📦  {mat_code}  ·  {mat_name}  ·  "
+                            f"Total received: {total_recv:,.2f}  ·  Last: {latest}",
+                            expanded=False,
+                        ):
+                            show_cols = ["Date","UOM","Received Qty","Notes","Received At"]
+                            st.dataframe(
+                                grp[show_cols].reset_index(drop=True),
+                                use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "⬇ Download Receipt Log",
+                        data=excel_bytes(rlog,
+                                         report_title="Material Receipt Log — Smart Material Estimator",
+                                         add_grand_total=True),
+                        file_name=f"receipt_log_{date.today()}.xlsx",
+                        mime="application/vnd.ms-excel",
+                        key="dl_receipt_log")
+
+    # ── Consumption History ────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("📜 View Consumption History", expanded=False):
+        conn = get_db()
+        log_df = pd.read_sql("""
+            SELECT entry_date AS Date,
+                   equipment_tag AS Equipment,
+                   lining_system_code AS Code,
+                   lining_system_name AS System,
+                   sqm_completed AS "SQM Done",
+                   material_code AS Material,
+                   material_name AS "Material Name",
+                   uom AS UOM,
+                   expected_qty AS "Expected Qty",
+                   consumed_qty AS "Consumed Qty",
+                   notes AS Notes,
+                   submitted_at AS "Submitted At"
+            FROM consumption_log
+            ORDER BY submitted_at DESC
+            LIMIT 200
+        """, conn)
+        conn.close()
+
+        if log_df.empty:
+            st.info("No consumption entries yet.")
+        else:
+            # Filter controls
+            fh1, fh2 = st.columns(2)
+            with fh1:
+                log_tags = ["All"] + sorted(log_df["Equipment"].unique().tolist())
+                fh_tag   = st.selectbox("Filter by Equipment", log_tags, key="log_tag")
+            with fh2:
+                log_dates = ["All"] + sorted(log_df["Date"].unique().tolist(), reverse=True)
+                fh_date   = st.selectbox("Filter by Date",     log_dates, key="log_date")
+
+            df_show = log_df.copy()
+            if fh_tag  != "All": df_show = df_show[df_show["Equipment"]==fh_tag]
+            if fh_date != "All": df_show = df_show[df_show["Date"]==fh_date]
+
+            st.dataframe(df_show, use_container_width=True, hide_index=True,
+                         height=min(600, 50+len(df_show)*35))
+            st.download_button(
+                "⬇ Download Consumption Log",
+                data=excel_bytes(df_show,
+                                 report_title="Daily Consumption Log — Smart Material Estimator",
+                                 add_grand_total=True),
+                file_name=f"consumption_log_{date.today()}.xlsx",
+                mime="application/vnd.ms-excel",
+                use_container_width=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 · TOTAL OVERVIEW  (Master Filterable Datatable)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab5:
-    st.markdown('<div class="sec-hdr">📈 Total Overview — Project-Wide Material Summary</div>',
+    st.markdown('<div class="sec-hdr">📈 Total Overview — Master Equipment & Material Table</div>',
                 unsafe_allow_html=True)
 
-    # ── Project totals from all equipment ────────────────────────────────────
-    all_tags_ov = eq_master["Equipment_Tag_No."].tolist()
+    # ── Build master table: one row per (Equipment, System Code) ─────────────
+    # Join eq_master + sqm_ref + demand aggregation
+    sqm_ref_ov = equip_sc[["Equipment_Tag_No.","Lining_System_Code",
+                            "Lining_System_Short_Name","Total_SQM_Original",
+                            "done_sqm","Total_SQM"]].drop_duplicates()
 
-    total_demand_ov = (
-        dm.groupby(["Material_Code","Material_Name","UOM"], as_index=False)
-        ["Demand_Qty"].sum()
+    # Total demand per (tag, code) from recipe × SQM
+    dm_agg = dm.groupby(["Equipment_Tag_No.","Lining_System_Code"],
+                         as_index=False).agg(
+        Total_Demand_Qty=("Demand_Qty","sum"))
+    dm_agg = dm_agg.merge(
+        inv[["Material_Code","Available_Qty"]].groupby("Material_Code",as_index=False).first(),
+        how="cross")  # we need per-code shortfall
+
+    # Simpler: shortfall per (tag,code) = demand − min(demand, available)
+    # Use cascade_allocate with all tags in file order for true shortfall
+    _all_tags_ov = eq_master["Equipment_Tag_No."].tolist()
+    _alloc_ov    = cascade_allocate(_all_tags_ov)
+
+    sc_shortfall = _alloc_ov.groupby(
+        ["Equipment_Tag_No.","Lining_System_Code"], as_index=False
+    ).agg(
+        Shortfall_Qty=("Shortfall_Qty","sum"),
+        Demand_Qty   =("Demand_Qty","sum"),
+        Allocated_Qty=("Allocated_Qty","sum"),
     )
-    total_demand_ov = total_demand_ov.merge(
-        inv[["Material_Code","Available_Qty"]], on="Material_Code", how="left"
-    )
-    total_demand_ov["Available_Qty"] = total_demand_ov["Available_Qty"].fillna(0)
-    total_demand_ov["Shortfall"]     = (
-        total_demand_ov["Demand_Qty"] - total_demand_ov["Available_Qty"]
-    ).clip(lower=0).round(3)
-    total_demand_ov["Coverage_%"]    = (
-        total_demand_ov["Available_Qty"].clip(upper=total_demand_ov["Demand_Qty"])
-        / total_demand_ov["Demand_Qty"].replace(0, np.nan) * 100
-    ).fillna(100).clip(0,100).round(1)
 
-    proj_avail_ov  = total_demand_ov["Available_Qty"].clip(
-        upper=total_demand_ov["Demand_Qty"]).sum()
-    proj_demand_ov = total_demand_ov["Demand_Qty"].sum()
-    proj_short_ov  = total_demand_ov["Shortfall"].sum()
-    proj_cov_ov    = (proj_avail_ov / proj_demand_ov * 100
-                      if proj_demand_ov > 0 else 100)
+    # Master table
+    master = sqm_ref_ov.rename(columns={
+        "Total_SQM_Original":"Total_SQM",
+        "done_sqm":          "Done_SQM",
+        "Total_SQM":         "Remaining_SQM",
+    })
+    # Merge equipment master (with all columns from Data Input sheet)
+    master = master.merge(
+        eq_master[["Equipment_Tag_No.","Name","Description","Location","Type",
+                   "Lining_Systems","Lining_Type","Material_Spec","Design"]],
+        on="Equipment_Tag_No.", how="left")
 
-    sqm_ref_ov      = equip_sc[["Equipment_Tag_No.","Lining_System_Code","Total_SQM"]].drop_duplicates()
-    proj_sqm_ov     = sqm_ref_ov["Total_SQM"].sum()
-    proj_can_sqm_ov = round(proj_sqm_ov * min(1.0, proj_cov_ov/100), 2)
-    proj_def_sqm_ov = round(proj_sqm_ov - proj_can_sqm_ov, 2)
+    # Merge equipment_sc for Lining_Area (surface area per row, not summed)
+    lining_area_ref = equip_sc[
+        ["Equipment_Tag_No.","Lining_System_Code","Total_SQM_Original"]
+    ].drop_duplicates().rename(columns={"Total_SQM_Original":"Lining_Area_SQM"})
+    master = master.merge(lining_area_ref,
+                          on=["Equipment_Tag_No.","Lining_System_Code"], how="left")
 
-    # ── KPI strip ─────────────────────────────────────────────────────────────
-    k1,k2,k3,k4,k5,k6 = st.columns(6)
-    k1.metric("Total Equipment",  len(all_tags_ov))
-    k2.metric("Total SQM",        f"{proj_sqm_ov:,.1f}")
-    k3.metric("SQM Achievable",   f"{proj_can_sqm_ov:,.1f}  ({proj_cov_ov:.0f}%)")
-    k4.metric("SQM Deficit",      f"{proj_def_sqm_ov:,.1f}")
-    k5.metric("Materials",        len(total_demand_ov))
-    k6.metric("Overall Coverage", f"{proj_cov_ov:.1f}%", delta=f"{proj_cov_ov-100:.1f}%")
+    master = master.merge(sc_shortfall[["Equipment_Tag_No.","Lining_System_Code",
+                                         "Shortfall_Qty","Demand_Qty","Allocated_Qty"]],
+                          on=["Equipment_Tag_No.","Lining_System_Code"], how="left")
+    master["Shortfall_Qty"] = master["Shortfall_Qty"].fillna(0)
+    master["Fulfillment_%"] = (master["Allocated_Qty"] /
+        master["Demand_Qty"].replace(0,np.nan) * 100).fillna(100).clip(0,100).round(1)
+
+    # Add serial number
+    master = master.reset_index(drop=True)
+    master.insert(0, "S.No", master.index + 1)
+
+    display_master = master[[
+        "S.No","Equipment_Tag_No.","Name","Description","Type","Location",
+        "Lining_Systems","Lining_System_Code","Lining_System_Short_Name",
+        "Lining_Type","Material_Spec","Design",
+        "Total_SQM","Lining_Area_SQM","Done_SQM","Remaining_SQM",
+        "Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_%"
+    ]].copy()
+    display_master.columns = [
+        "S.No","Equipment No","Name","Description","Type","Location",
+        "Lining System+","System Code","System Name",
+        "Lining Type","Material Spec.","Design",
+        "Total SQM","Lining Area SQM","Done SQM","Remaining SQM",
+        "Total Demand","Allocated","Shortfall Qty","Fulfil %"
+    ]
+
+    # ── Filter controls ───────────────────────────────────────────────────────
+    st.markdown('<div class="sec-hdr">🎛 Filters</div>', unsafe_allow_html=True)
+    ff1,ff2,ff3,ff4 = st.columns(4)
+    with ff1:
+        f_loc_ov = st.multiselect("📍 Location",
+            options=LOCATION_ORDER, default=LOCATION_ORDER, key="ov_loc")
+    with ff2:
+        type_opts_ov = sorted(display_master["Type"].dropna().unique().tolist())
+        f_type_ov = st.multiselect("🏷 Type",
+            options=type_opts_ov, default=type_opts_ov, key="ov_type")
+    with ff3:
+        codes_ov = sorted(display_master["System Code"].unique().tolist(), key=int)
+        f_code_ov = st.multiselect("⚙️ System Code",
+            options=codes_ov, default=codes_ov, key="ov_code")
+    with ff4:
+        status_opts = ["All","Fully Ready (100%)","Partial (50-99%)","Blocked (<50%)"]
+        f_status_ov = st.selectbox("📊 Status", options=status_opts, key="ov_status")
+
+    # Apply filters
+    filtered_master = display_master[
+        display_master["Location"].isin(f_loc_ov) &
+        display_master["Type"].isin(f_type_ov) &
+        display_master["System Code"].isin(f_code_ov)
+    ].copy()
+    if f_status_ov == "Fully Ready (100%)":
+        filtered_master = filtered_master[filtered_master["Fulfil %"] >= 100]
+    elif f_status_ov == "Partial (50-99%)":
+        filtered_master = filtered_master[(filtered_master["Fulfil %"] >= 50) &
+                                          (filtered_master["Fulfil %"] < 100)]
+    elif f_status_ov == "Blocked (<50%)":
+        filtered_master = filtered_master[filtered_master["Fulfil %"] < 50]
+
+    # Renumber after filter
+    filtered_master = filtered_master.reset_index(drop=True)
+    filtered_master["S.No"] = filtered_master.index + 1
+
+    # ── Dynamic summary KPIs ─────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    ov1,ov2,ov3,ov4,ov5,ov6 = st.columns(6)
+    ov1.metric("Rows (filtered)",    len(filtered_master),
+               help="Number of (Equipment, System Code) pairs in current filter.")
+    ov2.metric("Total SQM",          f'{filtered_master["Total SQM"].sum():,.1f}',
+               help="Sum of original SQM for filtered rows.")
+    ov3.metric("Done SQM",           f'{filtered_master["Done SQM"].sum():,.1f}',
+               help="SQM already completed (from daily consumption entries).")
+    ov4.metric("Remaining SQM",      f'{filtered_master["Remaining SQM"].sum():,.1f}',
+               help="SQM still to be completed = Total − Done.")
+    ov5.metric("Total Shortfall Qty",f'{filtered_master["Shortfall Qty"].sum():,.0f}',
+               help="Total material units short across all filtered rows.")
+    ov6.metric("Avg Coverage",
+               f'{filtered_master["Fulfil %"].mean():.1f}%' if len(filtered_master) else "0%",
+               help="Average fulfillment % across filtered (Equipment, System Code) pairs.")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Available vs Ordered ──────────────────────────────────────────────────
-    st.markdown('<div class="sec-hdr">📦 Available vs On-Order Materials</div>',
-                unsafe_allow_html=True)
+    # ── Colour-coded master table ─────────────────────────────────────────────
+    def _style_master(row):
+        pct = row["Fulfil %"]
+        if pct >= 100:  bg,tc = "rgba(16,185,129,.1)","#10B981"
+        elif pct >= 90: bg,tc = "rgba(249,115,22,.1)","#F97316"
+        elif pct >= 80: bg,tc = "rgba(234,179,8,.1)", "#EAB308"
+        else:           bg,tc = "rgba(239,68,68,.1)", "#EF4444"
+        styles = [f"background-color:{bg}"] * len(row)
+        ci = list(row.index).index("Fulfil %")
+        styles[ci] = f"background-color:{bg};color:{tc};font-weight:700"
+        return styles
 
-    ordered_col_ov = next(
-        (c for c in inv.columns if c in ("Ordered_Qty","Balance To Be Received")),
-        None
-    )
-    inv_ov = inv.copy()
-    inv_ov["On_Order"]    = inv_ov[ordered_col_ov].fillna(0) if ordered_col_ov else 0.0
-    inv_ov["Total_Stock"] = inv_ov["Available_Qty"] + inv_ov["On_Order"]
+    styled_master = (filtered_master.style
+        .apply(_style_master, axis=1)
+        .format({
+            "Total SQM":     "{:,.2f}",
+            "Done SQM":      "{:,.2f}",
+            "Remaining SQM": "{:,.2f}",
+            "Total Demand":  "{:,.2f}",
+            "Allocated":     "{:,.2f}",
+            "Shortfall Qty": "{:,.2f}",
+            "Fulfil %":      "{:.1f}%",
+        }))
+    st.dataframe(styled_master, use_container_width=True, hide_index=True,
+                 height=min(700, 50 + len(filtered_master)*35),
+                 key="ov_master_tbl")
 
-    io1,io2,io3 = st.columns(3)
-    io1.metric("Total Available",         f"{inv_ov['Available_Qty'].sum():,.0f} units")
-    io2.metric("Total On-Order",          f"{inv_ov['On_Order'].sum():,.0f} units")
-    io3.metric("Combined (Avail+Order)",  f"{inv_ov['Total_Stock'].sum():,.0f} units")
-
-    inv_ov_show = inv_ov[["Material_Code","Material_Name","UOM",
-                           "Available_Qty","On_Order","Total_Stock"]].copy()
-    inv_ov_show.columns = ["Code","Material Name","UOM","Available","On Order","Total (Avail+Order)"]
-
-    def _style_inv_ov(row):
-        if row["Available"] == 0 and row["On Order"] == 0:
-            bg = "rgba(239,68,68,.08)"
-        elif row["Available"] == 0:
-            bg = "rgba(249,115,22,.08)"
-        else:
-            bg = "rgba(16,185,129,.06)"
-        return [f"background-color:{bg}"] * len(row)
-
-    st.dataframe(
-        inv_ov_show.style.apply(_style_inv_ov, axis=1).format(
-            {"Available":"{:,.2f}","On Order":"{:,.2f}","Total (Avail+Order)":"{:,.2f}"}),
-        use_container_width=True, hide_index=True,
-        height=50 + len(inv_ov_show)*35, key="ov_inv_tbl")
-
+    # ── Per-System-Code material detail (expandable) ─────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── System Code feasibility ───────────────────────────────────────────────
-    st.markdown('<div class="sec-hdr">⚙️ System Code Feasibility — SQM & Material Qty</div>',
-                unsafe_allow_html=True)
-
-    all_codes_ov = sorted(dm["Lining_System_Code"].unique(), key=lambda x: int(x))
-    sc_rows_ov   = []
-    for code in all_codes_ov:
-        sc_dm = dm[dm["Lining_System_Code"] == code]
-        if sc_dm.empty: continue
-        sname   = sc_dm["Lining_System_Short_Name"].iloc[0]
-        n_equip = sc_dm["Equipment_Tag_No."].nunique()
-        sc_sqm  = sqm_ref_ov[sqm_ref_ov["Lining_System_Code"]==code]["Total_SQM"].sum()
-        sc_mat  = sc_dm.groupby("Material_Code",as_index=False)["Demand_Qty"].sum()
-        sc_mat  = sc_mat.merge(inv[["Material_Code","Available_Qty"]], on="Material_Code", how="left")
-        sc_mat["Available_Qty"] = sc_mat["Available_Qty"].fillna(0)
-        sc_d    = sc_mat["Demand_Qty"].sum()
-        sc_a    = sc_mat["Available_Qty"].clip(upper=sc_mat["Demand_Qty"]).sum()
-        sc_sh   = (sc_mat["Demand_Qty"]-sc_mat["Available_Qty"]).clip(lower=0).sum()
-        sc_cov  = (sc_a/sc_d*100) if sc_d>0 else 100
-        sc_can  = round(sc_sqm * min(1.0, sc_cov/100), 2)
-        sc_def  = round(sc_sqm - sc_can, 2)
-        sc_rows_ov.append({
-            "Code": f"Code {code}", "Short Name": sname, "Equipment": n_equip,
-            "Total SQM": round(sc_sqm,2), "SQM Can Do": sc_can, "SQM Deficit": sc_def,
-            "Coverage %": round(sc_cov,1), "Total Demand": round(sc_d,2),
-            "Available Qty": round(sc_a,2), "Shortfall Qty": round(sc_sh,2),
-        })
-
-    if sc_rows_ov:
-        sc_df_ov = pd.DataFrame(sc_rows_ov).sort_values("Coverage %")
-        bar_c_ov = ["#10B981" if c>=100 else "#F97316" if c>=90
-                    else "#EAB308" if c>=80 else "#EF4444" for c in sc_df_ov["Coverage %"]]
-        fig_ov = go.Figure(go.Bar(
-            y=sc_df_ov["Code"]+"  "+sc_df_ov["Short Name"],
-            x=sc_df_ov["Coverage %"], orientation="h",
-            marker_color=bar_c_ov, marker_opacity=.8,
-            text=[f"{r['Coverage %']:.0f}%  ·  {r['SQM Can Do']:,.0f}/{r['Total SQM']:,.0f} SQM"
-                  f"  ·  Short: {r['Shortfall Qty']:,.0f} units"
-                  for _,r in sc_df_ov.iterrows()],
-            textposition="inside",
-            textfont=dict(family="JetBrains Mono",size=9,color="#fff"),
-        ))
-        fig_ov.add_vline(x=100,line_color="rgba(128,128,128,.2)",line_dash="dot",line_width=1)
-        fig_ov.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0,r=20,t=5,b=0),height=max(260,len(sc_df_ov)*44),
-            xaxis=dict(range=[0,120],gridcolor="rgba(128,128,128,.1)",
-                       tickfont=dict(family="JetBrains Mono",size=9)),
-            yaxis=dict(gridcolor="rgba(128,128,128,.1)",
-                       tickfont=dict(family="JetBrains Mono",size=9)),
-            font=dict(family="JetBrains Mono",size=10,color="rgba(148,163,184,.8)"),
-        )
-        st.plotly_chart(fig_ov, use_container_width=True, key="ov_sc_chart")
-
-        def _style_sc_ov(row):
-            pct = row["Coverage %"]
-            if pct>=100:  bg,tc="rgba(16,185,129,.1)","#10B981"
-            elif pct>=90: bg,tc="rgba(249,115,22,.1)","#F97316"
-            elif pct>=80: bg,tc="rgba(234,179,8,.1)", "#EAB308"
-            else:         bg,tc="rgba(239,68,68,.1)", "#EF4444"
-            styles=[f"background-color:{bg}"]*len(row)
-            ci=list(row.index).index("Coverage %")
-            styles[ci]=f"background-color:{bg};color:{tc};font-weight:700"
-            return styles
-
-        st.dataframe(
-            sc_df_ov.style.apply(_style_sc_ov,axis=1).format({
-                "Total SQM":"{:,.2f}","SQM Can Do":"{:,.2f}","SQM Deficit":"{:,.2f}",
-                "Coverage %":"{:.1f}%","Total Demand":"{:,.2f}",
-                "Available Qty":"{:,.2f}","Shortfall Qty":"{:,.2f}"}),
-            use_container_width=True, hide_index=True,
-            height=50+len(sc_df_ov)*35, key="ov_sc_tbl")
-
-        st.download_button("⬇ Download System Code Summary",
-            data=excel_bytes(sc_df_ov.reset_index(drop=True)),
-            file_name="total_overview_syscode.xlsx",
-            mime="application/vnd.ms-excel")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Per-system-code material detail ──────────────────────────────────────
     st.markdown('<div class="sec-hdr">🔬 Material Detail by System Code</div>',
                 unsafe_allow_html=True)
 
-    for code in all_codes_ov:
+    for code in sorted(filtered_master["System Code"].unique().tolist(), key=int):
         sc_dm = dm[dm["Lining_System_Code"]==code]
         if sc_dm.empty: continue
-        sname  = sc_dm["Lining_System_Short_Name"].iloc[0]
-        sc_sqm = sqm_ref_ov[sqm_ref_ov["Lining_System_Code"]==code]["Total_SQM"].sum()
-        sc_mat = sc_dm.groupby(["Material_Code","Material_Name","UOM"],
-                                as_index=False)["Demand_Qty"].sum()
-        sc_mat = sc_mat.merge(inv[["Material_Code","Available_Qty"]], on="Material_Code", how="left")
+        sname   = filtered_master[filtered_master["System Code"]==code]["System Name"].iloc[0]
+        sc_sqm  = filtered_master[filtered_master["System Code"]==code]["Total SQM"].sum()
+        done_sq = filtered_master[filtered_master["System Code"]==code]["Done SQM"].sum()
+        sc_mat  = sc_dm.groupby(["Material_Code","Material_Name","UOM"],
+                                 as_index=False)["Demand_Qty"].sum()
+        sc_mat  = sc_mat.merge(inv[["Material_Code","Available_Qty"]],
+                               on="Material_Code", how="left")
         sc_mat["Available_Qty"] = sc_mat["Available_Qty"].fillna(0)
         sc_mat["Shortfall"]     = (sc_mat["Demand_Qty"]-sc_mat["Available_Qty"]).clip(lower=0).round(3)
         sc_mat["Coverage_%"]    = (
             sc_mat["Available_Qty"].clip(upper=sc_mat["Demand_Qty"])
             / sc_mat["Demand_Qty"].replace(0,np.nan)*100
         ).fillna(100).clip(0,100).round(1)
-        sc_mat["SQM_Can"]     = (sc_mat["Coverage_%"]/100 * sc_sqm).round(2)
-        sc_mat["SQM_Deficit"] = (sc_sqm - sc_mat["SQM_Can"]).round(2)
-        sc_d  = sc_mat["Demand_Qty"].sum()
-        sc_a  = sc_mat["Available_Qty"].clip(upper=sc_mat["Demand_Qty"]).sum()
-        sc_c  = (sc_a/sc_d*100) if sc_d>0 else 100
-        sc_can= sc_sqm * min(1.0, sc_c/100)
-        dot   = "🟢" if sc_c>=100 else "🟠" if sc_c>=90 else "🟡" if sc_c>=80 else "🔴"
+        # SQM achievable based on MINIMUM material coverage (bottleneck)
+        sc_cov_min = sc_mat["Coverage_%"].min() if len(sc_mat) else 100
+        sc_cov_avg = (sc_mat["Available_Qty"].clip(upper=sc_mat["Demand_Qty"]).sum() /
+                      sc_mat["Demand_Qty"].sum()*100) if sc_mat["Demand_Qty"].sum()>0 else 100
+        sc_can      = sc_sqm * min(1.0, sc_cov_avg/100)
+        dot = "🟢" if sc_cov_avg>=100 else "🟠" if sc_cov_avg>=90 else "🟡" if sc_cov_avg>=80 else "🔴"
 
         with st.expander(
-            f"{dot}  Code {code}  ·  {sname}  ·  {sc_can:,.1f}/{sc_sqm:,.1f} SQM  ·  {sc_c:.1f}%",
+            f"{dot}  Code {code}  ·  {sname}  ·  "
+            f"{sc_can:,.1f}/{sc_sqm:,.1f} SQM  ·  Done: {done_sq:,.1f}  ·  {sc_cov_avg:.1f}%",
             expanded=False,
         ):
-            m1,m2,m3,m4 = st.columns(4)
-            m1.metric("System Code",f"Code {code}")
-            m2.metric("Short Name", sname)
-            m3.metric("Total SQM",  f"{sc_sqm:,.2f}")
-            m4.metric("SQM Can Do", f"{sc_can:,.2f}  ({sc_c:.1f}%)")
+            m1,m2,m3,m4,m5 = st.columns(5)
+            m1.metric("System Code", f"Code {code}")
+            m2.metric("Short Name",  sname)
+            m3.metric("Total SQM",   f"{sc_sqm:,.2f}")
+            m4.metric("Done SQM",    f"{done_sq:,.2f}",
+                      help="SQM completed via Daily Consumption entries.")
+            m5.metric("SQM Can Do",  f"{sc_can:,.2f}  ({sc_cov_avg:.1f}%)",
+                      help="Achievable SQM with current inventory balance.")
 
             mat_show = sc_mat[["Material_Code","Material_Name","UOM",
                                 "Available_Qty","Demand_Qty","Shortfall",
-                                "Coverage_%","SQM_Can","SQM_Deficit"]].copy()
-            mat_show.columns = ["Code","Material Name","UOM","Available",
-                                 "Total Demand","Shortfall","Coverage %",
-                                 "SQM Can Do","SQM Deficit"]
-
-            def _style_det_ov(row):
+                                "Coverage_%"]].copy()
+            mat_show.columns = ["Code","Material Name","UOM",
+                                 "Available","Total Demand","Shortfall","Coverage %"]
+            def _style_ov_det(row):
                 pct=row["Coverage %"]
                 if pct>=100:  bg,tc="rgba(16,185,129,.1)","#10B981"
                 elif pct>=90: bg,tc="rgba(249,115,22,.1)","#F97316"
@@ -2521,10 +3041,34 @@ with tab5:
                 ci=list(row.index).index("Coverage %")
                 styles[ci]=f"background-color:{bg};color:{tc};font-weight:700"
                 return styles
-
             st.dataframe(
-                mat_show.style.apply(_style_det_ov,axis=1).format({
-                    "Available":"{:,.3f}","Total Demand":"{:,.3f}","Shortfall":"{:,.3f}",
-                    "Coverage %":"{:.1f}%","SQM Can Do":"{:,.2f}","SQM Deficit":"{:,.2f}"}),
+                mat_show.style.apply(_style_ov_det,axis=1).format({
+                    "Available":"{:,.3f}","Total Demand":"{:,.3f}",
+                    "Shortfall":"{:,.3f}","Coverage %":"{:.1f}%"}),
                 use_container_width=True, hide_index=True,
                 height=65+len(mat_show)*35, key=f"ov_det_{code}")
+
+    # ── Downloads ─────────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            "⬇ Download Filtered Master Table",
+            data=excel_bytes(filtered_master,
+                             report_title=f"Total Overview — {date.today()}",
+                             add_grand_total=True),
+            file_name=f"total_overview_{date.today()}.xlsx",
+            mime="application/vnd.ms-excel",
+            use_container_width=True)
+    with dl2:
+        if db_available():
+            conn = get_db()
+            full_log = pd.read_sql("SELECT * FROM consumption_log ORDER BY submitted_at DESC", conn)
+            conn.close()
+            st.download_button(
+                "⬇ Download Full Consumption Log",
+                data=excel_bytes(full_log,
+                                 report_title="Full Consumption Log — Smart Material Estimator"),
+                file_name=f"consumption_log_full_{date.today()}.xlsx",
+                mime="application/vnd.ms-excel",
+                use_container_width=True)
