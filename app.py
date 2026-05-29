@@ -148,6 +148,40 @@ hr{border-color:var(--border)!important;margin:.8rem 0!important;}
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ADMIN LOGIN GATE  —  change credentials here
+# ─────────────────────────────────────────────────────────────────────────────
+_ADMIN_USER = "admin"
+_ADMIN_PASS = "admin2026"
+
+def _show_login():
+    st.markdown("""
+    <div style="display:flex;justify-content:center;align-items:center;
+                min-height:60vh;flex-direction:column;gap:1rem;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:1.6rem;
+                  font-weight:700;color:var(--t0);letter-spacing:-.01em;
+                  margin-bottom:.5rem;">🏗 Smart Material Estimator</div>
+      <div style="font-size:.8rem;color:var(--t3);margin-bottom:1.5rem;">
+        Please log in to continue</div>
+    </div>""", unsafe_allow_html=True)
+    col_l, col_m, col_r = st.columns([1,1,1])
+    with col_m:
+        user = st.text_input("Username", key="_login_user", placeholder="Enter username")
+        pwd  = st.text_input("Password", type="password", key="_login_pass",
+                             placeholder="Enter password")
+        if st.button("🔐  Login", use_container_width=True, key="_login_btn"):
+            if user == _ADMIN_USER and pwd == _ADMIN_PASS:
+                st.session_state["_authenticated"] = True
+                st.rerun()
+            else:
+                st.error("❌ Invalid credentials. Please try again.")
+
+if "_authenticated" not in st.session_state:
+    st.session_state["_authenticated"] = False
+if not st.session_state["_authenticated"]:
+    _show_login()
+    st.stop()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DATA LOADER
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner="Loading project data…")
@@ -194,13 +228,42 @@ def load_all():
         Total_SQM     =("Surface_Area_SQM","sum"),
     )
     eq_master["Location"] = eq_master["Location"].str.strip()
+    eq_master["Type"]     = eq_master["Type"].str.strip()
 
-    return inv, recipe, equip_sc, dm, eq_master
+    # ── Inventory with Ordered_Qty (map Balance To Be Received or Ordered_Qty) ─
+    inv_full = df_a_raw.copy()
+    inv_full.columns = inv_full.columns.str.strip()
+    inv_full["Material_Code"] = inv_full["Material_Code"].astype(str).str.strip()
+    # Support both column names: user may rename to Ordered_Qty or keep original
+    if "Ordered_Qty" in inv_full.columns:
+        ordered_col = "Ordered_Qty"
+    elif "Balance To Be Received" in inv_full.columns:
+        ordered_col = "Balance To Be Received"
+    else:
+        ordered_col = None
+
+    if ordered_col:
+        inv_full[ordered_col] = pd.to_numeric(inv_full[ordered_col], errors="coerce").fillna(0)
+        inv_ordered = (
+            inv_full.groupby("Material_Code", as_index=False)
+            .agg(Ordered_Qty=(ordered_col, "sum"))
+        )
+        inv = inv.merge(inv_ordered, on="Material_Code", how="left")
+        inv["Ordered_Qty"] = inv["Ordered_Qty"].fillna(0)
+    else:
+        inv["Ordered_Qty"] = 0.0
+
+    # ── SQM reference table: (tag, sys_code) → correct unique SQM ────────────
+    # equip_sc is ground truth — never sum Total_SQM from dm (it duplicates per material)
+    sqm_ref = equip_sc[["Equipment_Tag_No.","Lining_System_Code","Total_SQM"]].drop_duplicates()
+
+    return inv, recipe, equip_sc, dm, eq_master, sqm_ref
 
 
-inv, recipe, equip_sc, dm, eq_master = load_all()
+inv, recipe, equip_sc, dm, eq_master, sqm_ref = load_all()
 ALL_TAGS      = sorted(eq_master["Equipment_Tag_No."].tolist())
-INV_POOL_INIT = inv.set_index("Material_Code")["Available_Qty"].to_dict()
+INV_POOL_INIT    = inv.set_index("Material_Code")["Available_Qty"].to_dict()
+INV_ORDERED_INIT = inv.set_index("Material_Code")["Ordered_Qty"].to_dict()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
@@ -285,72 +348,282 @@ def syscode_fulfillment(alloc_df: pd.DataFrame, tag: str, code: str) -> float:
     a = t["Allocated_Qty"].sum()
     return min(100.0, a / d * 100) if d > 0 else 100.0
 
+def sqm_can_do(alloc_df: pd.DataFrame, tag: str, code: str) -> tuple[float, float, float]:
+    """
+    Returns (total_sqm, sqm_can_do, sqm_shortfall) for a (tag, system_code) pair.
+    Method: weighted avg fulfillment % × Total_SQM
+    """
+    rows = alloc_df[(alloc_df["Equipment_Tag_No."]==tag) &
+                    (alloc_df["Lining_System_Code"]==code)]
+    if rows.empty:
+        return 0.0, 0.0, 0.0
+    total_sqm = sqm_ref[
+        (sqm_ref["Equipment_Tag_No."]==tag) &
+        (sqm_ref["Lining_System_Code"]==code)
+    ]["Total_SQM"].sum()
+    d = rows["Demand_Qty"].sum()
+    a = rows["Allocated_Qty"].sum()
+    pct = min(1.0, a / d) if d > 0 else 1.0
+    can   = round(total_sqm * pct, 2)
+    short = round(total_sqm - can, 2)
+    return round(total_sqm, 2), can, short
+
+
 def excel_bytes(df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         df.to_excel(w, index=False)
     return buf.getvalue()
 
-def plotly_mat_table(df: pd.DataFrame, key_suffix: str, height: int = 380) -> None:
-    """Renders a colour-coded native Streamlit dataframe that perfectly adapts to Light/Dark mode."""
-    cols_show = ["Material_Code", "Material_Name", "UOM",
-                 "Demand_Qty", "Allocated_Qty", "Shortfall_Qty", "Fulfillment_Pct"]
-    
-    # Copy data and rename columns FIRST to avoid Streamlit column_config conflicts
-    df2 = df[cols_show].copy()
-    clean_names = {
-        "Material_Code": "Code",
-        "Material_Name": "Material Name",
-        "UOM": "UOM",
-        "Demand_Qty": "Demand",
-        "Allocated_Qty": "Allocated",
-        "Shortfall_Qty": "Shortfall",
-        "Fulfillment_Pct": "Fulfil %"
-    }
-    df2 = df2.rename(columns=clean_names)
+# ─────────────────────────────────────────────────────────────────────────────
+# SUGGESTION ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+def _run_suggestion_engine(tag_list: list[str]) -> dict:
+    """
+    For each tag, tries moving it to every earlier position.
+    Returns the best single-move gain per equipment and per system code.
+    """
+    if len(tag_list) < 2:
+        return {"eq_suggestions": [], "sc_suggestions": [], "baseline_pcts": {}}
 
-    # 1. Row-by-Row Styling Logic
+    baseline = cascade_allocate(tag_list)
+
+    def _eq_pct(alloc, tag):
+        t = alloc[alloc["Equipment_Tag_No."] == tag]
+        d = t["Demand_Qty"].sum(); a = t["Allocated_Qty"].sum()
+        return round(min(100.0, a/d*100), 2) if d > 0 else 100.0
+
+    def _sc_pct(alloc, tag, code):
+        t = alloc[(alloc["Equipment_Tag_No."]==tag)&(alloc["Lining_System_Code"]==code)]
+        d = t["Demand_Qty"].sum(); a = t["Allocated_Qty"].sum()
+        return round(min(100.0, a/d*100), 2) if d > 0 else 100.0
+
+    baseline_pcts = {t: _eq_pct(baseline, t) for t in tag_list}
+    eq_suggestions, sc_suggestions = [], []
+
+    for i, target in enumerate(tag_list):
+        if i == 0: continue
+        base_pct = baseline_pcts[target]
+        best_gain = 0; best_pos = i; best_new_pct = base_pct
+        for new_pos in range(0, i):
+            new_order = [t for t in tag_list if t != target]
+            new_order.insert(new_pos, target)
+            alloc   = cascade_allocate(new_order)
+            new_pct = _eq_pct(alloc, target)
+            gain    = new_pct - base_pct
+            if gain > best_gain:
+                best_gain = gain; best_pos = new_pos; best_new_pct = new_pct
+        if best_gain > 0.4:
+            eq_suggestions.append({
+                "tag": target, "current_pos": i+1, "suggest_pos": best_pos+1,
+                "current_pct": base_pct, "new_pct": best_new_pct,
+                "gain": round(best_gain, 1),
+            })
+
+    for i, tag in enumerate(tag_list):
+        if i == 0: continue
+        tag_dm = dm[dm["Equipment_Tag_No."] == tag]
+        for code in sorted(tag_dm["Lining_System_Code"].unique(), key=lambda x: int(x)):
+            sname    = tag_dm[tag_dm["Lining_System_Code"]==code]["Lining_System_Short_Name"].iloc[0]
+            base_pct = _sc_pct(baseline, tag, code)
+            best_gain = 0; best_pos = i; best_new_pct = base_pct
+            for new_pos in range(0, i):
+                new_order = [t for t in tag_list if t != tag]
+                new_order.insert(new_pos, tag)
+                alloc   = cascade_allocate(new_order)
+                new_pct = _sc_pct(alloc, tag, code)
+                gain    = new_pct - base_pct
+                if gain > best_gain:
+                    best_gain = gain; best_pos = new_pos; best_new_pct = new_pct
+            if best_gain > 0.4:
+                sc_suggestions.append({
+                    "tag": tag, "code": code, "sname": sname,
+                    "current_pos": i+1, "suggest_pos": best_pos+1,
+                    "current_pct": base_pct, "new_pct": best_new_pct,
+                    "gain": round(best_gain, 1), "is_full": best_new_pct >= 99.9,
+                })
+
+    eq_suggestions.sort(key=lambda x: x["gain"], reverse=True)
+    sc_suggestions.sort(key=lambda x: (x["is_full"], x["gain"]), reverse=True)
+    return {
+        "eq_suggestions": eq_suggestions[:5],
+        "sc_suggestions": sc_suggestions[:8],
+        "baseline_pcts":  baseline_pcts,
+    }
+
+
+def render_suggestion_panel(tag_list: list[str], panel_key: str) -> None:
+    """Renders the Smart Reordering Suggestion panel."""
+    st.markdown(
+        '<div class="sec-hdr" style="margin-top:1.4rem;">'
+        '💡 Smart Reordering Suggestions</div>', unsafe_allow_html=True)
+    st.caption("Each suggestion shows the single best position change for one equipment "
+               "or system code. Moving it there frees up inventory for that item first.")
+
+    with st.spinner("Analysing reorder scenarios…"):
+        result = _run_suggestion_engine(tag_list)
+
+    eq_sugg = result["eq_suggestions"]
+    sc_sugg = result["sc_suggestions"]
+
+    if not eq_sugg and not sc_sugg:
+        st.info("No meaningful reordering improvement found with current inventory levels.")
+        return
+
+    c_eq, c_sc = st.columns(2, gap="large")
+
+    with c_eq:
+        st.markdown(
+            '<div style="font-family:\'JetBrains Mono\',monospace;font-size:.65rem;'
+            'font-weight:700;letter-spacing:.1em;text-transform:uppercase;'
+            'color:var(--amber);margin-bottom:.6rem;">🔩 By Equipment</div>',
+            unsafe_allow_html=True)
+        if not eq_sugg:
+            st.caption("No equipment-level gains found.")
+        for s in eq_sugg:
+            gc = "#10B981" if s["new_pct"] >= 99.9 else "#F59E0B"
+            tn = eq_master.set_index("Equipment_Tag_No.")["Name"].get(s["tag"], s["tag"])
+            tag_label = f"{s['tag']}  ·  {tn[:24]}"
+            move_label = (
+                f"Move #{s['current_pos']} → #{s['suggest_pos']}  ·  "
+                f"{s['current_pct']:.1f}% → {s['new_pct']:.1f}%"
+                + ("  ✅ Full completion!" if s['new_pct'] >= 99.9 else "")
+            )
+            st.markdown(
+                f'<div class="card" style="margin-bottom:.45rem;padding:.75rem 1rem;">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                f'<span style="font-size:.82rem;font-weight:700;color:var(--t0);">{tag_label}</span>'
+                f'<span style="font-family:JetBrains Mono,monospace;font-size:.75rem;'
+                f'color:{gc};font-weight:700;">+{s["gain"]:.1f}%</span></div>'
+                f'<div style="font-size:.76rem;color:var(--t2);margin-top:.35rem;">'
+                f'{move_label}</div></div>',
+                unsafe_allow_html=True)
+
+    with c_sc:
+        st.markdown(
+            '<div style="font-family:\'JetBrains Mono\',monospace;font-size:.65rem;'
+            'font-weight:700;letter-spacing:.1em;text-transform:uppercase;'
+            'color:var(--amber);margin-bottom:.6rem;">⚙️ By System Code</div>',
+            unsafe_allow_html=True)
+        if not sc_sugg:
+            st.caption("No system-code-level gains found.")
+        for s in sc_sugg:
+            gc   = "#10B981" if s["is_full"] else "#F59E0B"
+            full = ('  <span style="background:rgba(16,185,129,.15);color:#10B981;'
+                    'font-size:.65rem;padding:.1rem .4rem;border-radius:3px;">100% COMPLETE</span>'
+                    if s["is_full"] else "")
+            tn = eq_master.set_index("Equipment_Tag_No.")["Name"].get(s["tag"], s["tag"])
+            sc_label   = f"Code {s['code']}  {s['sname']}  ·  {s['tag']} {tn[:20]}"
+            sc_move    = (
+                f"Move #{s['current_pos']} → #{s['suggest_pos']}  ·  "
+                f"{s['current_pct']:.1f}% → {s['new_pct']:.1f}%"
+                + ("  ✅ 100% COMPLETE" if s["is_full"] else "")
+            )
+            st.markdown(
+                f'<div class="card" style="margin-bottom:.45rem;padding:.75rem 1rem;">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                f'<span style="font-size:.8rem;font-weight:600;color:var(--t0);">{sc_label}</span>'
+                f'<span style="font-family:JetBrains Mono,monospace;font-size:.75rem;'
+                f'color:{gc};font-weight:700;">+{s["gain"]:.1f}%</span></div>'
+                f'<div style="font-size:.76rem;color:var(--t2);margin-top:.3rem;">'
+                f'{sc_move}</div></div>',
+                unsafe_allow_html=True)
+
+
+# ── Type/Description label helper ─────────────────────────────────────────────
+def _eq_label(tag: str) -> str:
+    """Returns 'TAG  —  Name  |  Type  |  Desc' for display labels."""
+    row = eq_master[eq_master["Equipment_Tag_No."] == tag]
+    if row.empty: return tag
+    r = row.iloc[0]
+    type_s = str(r.get("Type","") or "").strip()
+    desc_s = str(r.get("Description","") or "").strip()
+    name_s = str(r.get("Name","") or "").strip()
+    parts  = [name_s]
+    if type_s and type_s not in ("nan","—"): parts.append(type_s)
+    if desc_s and desc_s not in ("nan","—"): parts.append(desc_s[:28])
+    return f"{tag}  —  " + "  |  ".join(parts)
+
+
+def plotly_mat_table(df: pd.DataFrame, key_suffix: str, height: int = 380,
+                     show_sqm: bool = False, tag: str = "", code: str = "") -> None:
+    """Colour-coded material table. If show_sqm=True, adds SQM columns after qty cols."""
+    base_cols = ["Material_Code", "Material_Name", "UOM",
+                 "Demand_Qty", "Allocated_Qty", "Shortfall_Qty", "Fulfillment_Pct"]
+    avail_cols = [c for c in base_cols if c in df.columns]
+    df2 = df[avail_cols].copy()
+
+    # Add Ordered_Qty if available
+    if "Ordered_Qty" in df.columns:
+        df2.insert(df2.columns.get_loc("Allocated_Qty"), "Ordered_Qty", df["Ordered_Qty"])
+
+    rename_map = {
+        "Material_Code":  "Code",
+        "Material_Name":  "Material Name",
+        "UOM":            "UOM",
+        "Demand_Qty":     "Demand",
+        "Ordered_Qty":    "On Order",
+        "Allocated_Qty":  "Allocated",
+        "Shortfall_Qty":  "Shortfall",
+        "Fulfillment_Pct":"Fulfil %",
+    }
+    df2 = df2.rename(columns=rename_map)
+
+    # SQM columns (inserted after qty columns)
+    if show_sqm and tag and code:
+        total_sqm, can_sqm, short_sqm = sqm_can_do(df, tag, code)
+        pct_sqm = (can_sqm / total_sqm * 100) if total_sqm > 0 else 100
+        # Add SQM rows as constant columns
+        df2["SQM Total"]   = total_sqm
+        df2["SQM Done"]    = can_sqm
+        df2["SQM Deficit"] = short_sqm
+        df2["SQM Done %"]  = round(pct_sqm, 1)
+
+    # Pre-computed per-row SQM columns (for combined/aggregated tables)
+    elif {"SQM_Total","SQM_Done","SQM_Deficit"}.issubset(df.columns):
+        df2["SQM Total"]   = df["SQM_Total"].values
+        df2["SQM Done"]    = df["SQM_Done"].values
+        df2["SQM Deficit"] = df["SQM_Deficit"].values
+        df2["SQM Done %"]  = np.where(
+            df["SQM_Total"].values > 0,
+            (df["SQM_Done"].values / df["SQM_Total"].replace(0, np.nan).values * 100),
+            100.0
+        ).round(1)
+
+    fmt = {
+        "Demand":     "{:,.3f}",
+        "Allocated":  "{:,.3f}",
+        "Shortfall":  "{:,.3f}",
+        "Fulfil %":   "{:.1f}%",
+    }
+    if "On Order" in df2.columns:
+        fmt["On Order"] = "{:,.3f}"
+    if "SQM Total" in df2.columns:
+        fmt.update({"SQM Total":"{:,.2f}","SQM Done":"{:,.2f}",
+                    "SQM Deficit":"{:,.2f}","SQM Done %":"{:.1f}%"})
+
+    fulfil_col = "Fulfil %"
+
     def style_row(row):
-        pct = row["Fulfil %"]
-        if pd.isna(pct): 
-            pct = 100.0
-            
+        pct = row.get(fulfil_col, 100)
+        if pd.isna(pct): pct = 100.0
         if pct >= 100:
-            bg = "rgba(16, 185, 129, 0.12)"
-            tc = "#10B981" # Emerald Green
+            bg, tc = "rgba(16,185,129,0.12)", "#10B981"
         elif pct >= 90:
-            bg = "rgba(249, 115, 22, 0.12)"
-            tc = "#F97316" # Orange
+            bg, tc = "rgba(249,115,22,0.12)",  "#F97316"
         elif pct >= 80:
-            bg = "rgba(234, 179, 8, 0.12)"
-            tc = "#EAB308" # Yellow
+            bg, tc = "rgba(234,179,8,0.12)",   "#EAB308"
         else:
-            bg = "rgba(239, 68, 68, 0.12)"
-            tc = "#EF4444" # Red
-            
-        # Apply background to all columns, but add explicit text color/weight ONLY to the last column
-        styles = [f"background-color: {bg}"] * len(df2.columns)
-        styles[-1] = f"background-color: {bg}; color: {tc}; font-weight: 700;"
+            bg, tc = "rgba(239,68,68,0.12)",   "#EF4444"
+        styles = [f"background-color:{bg}"] * len(row)
+        fidx = list(row.index).index(fulfil_col) if fulfil_col in row.index else -1
+        if fidx >= 0:
+            styles[fidx] = f"background-color:{bg};color:{tc};font-weight:700"
         return styles
 
-    # 2. Apply styles and format numbers using the NEW column names
-    styled_df = df2.style.apply(style_row, axis=1)
-    
-    styled_df = styled_df.format({
-        "Demand": "{:,.3f}",
-        "Allocated": "{:,.3f}",
-        "Shortfall": "{:,.3f}",
-        "Fulfil %": "{:.1f}%"
-    })
-
-    # 3. Render natively (No column_config allowed when passing a Styler object)
-    st.dataframe(
-        styled_df,
-        hide_index=True,
-        use_container_width=True,
-        height=height,
-        key=f"tbl_{key_suffix}"
-    )
+    styled_df = df2.style.apply(style_row, axis=1).format(fmt)
+    st.dataframe(styled_df, hide_index=True, use_container_width=True,
+                 height=height, key=f"tbl_{key_suffix}")
 
 
 
@@ -420,483 +693,557 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab0, tab1, tab2, tab3, tab4 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊  Dashboard",
     "🔍  Equipment Entry",
     "📦  Session Order Report",
     "📍  Location Report",
     "⚙️  Execution Plan",
+    "📈  Total Overview",
 ])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 0 · DASHBOARD
+# TAB 0 · DASHBOARD (Project Overview + Material Requirement & Procurement)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab0:
 
-    # ── Pre-compute project-wide data (no cascade — raw inventory vs total demand)
-    total_demand_df = (
-        dm.groupby(["Material_Code", "Material_Name", "UOM"], as_index=False)
-        ["Demand_Qty"].sum()
+    # ── Dashboard toggle ──────────────────────────────────────────────────────
+    dash_view = st.radio(
+        "View", ["📈 Project Overview", "🛒 Material Requirement & Procurement"],
+        horizontal=True, key="dash_view", label_visibility="collapsed",
     )
-    total_demand_df = total_demand_df.merge(
-        inv[["Material_Code", "Available_Qty"]], on="Material_Code", how="left"
-    )
-    total_demand_df["Available_Qty"]  = total_demand_df["Available_Qty"].fillna(0)
-    total_demand_df["Shortfall"]      = (
-        total_demand_df["Demand_Qty"] - total_demand_df["Available_Qty"]
-    ).clip(lower=0).round(3)
-    total_demand_df["Coverage_Pct"]   = (
-        total_demand_df["Available_Qty"].clip(upper=total_demand_df["Demand_Qty"])
-        / total_demand_df["Demand_Qty"].replace(0, np.nan) * 100
-    ).fillna(100).clip(0, 100).round(1)
+    st.markdown("<hr>", unsafe_allow_html=True)
 
-    total_equip      = len(eq_master)
-    total_sqm        = eq_master["Total_SQM"].sum()
-    total_materials  = len(total_demand_df)
-    overall_demand   = total_demand_df["Demand_Qty"].sum()
-    overall_avail    = total_demand_df["Available_Qty"].clip(
-                           upper=total_demand_df["Demand_Qty"]).sum()
-    overall_short    = total_demand_df["Shortfall"].sum()
-    overall_cov      = (overall_avail / overall_demand * 100) if overall_demand > 0 else 100
-    n_critical       = (total_demand_df["Coverage_Pct"] < 50).sum()
-    n_ok             = (total_demand_df["Coverage_Pct"] >= 100).sum()
-
-    # ── Filter controls ───────────────────────────────────────────────────────
-    st.markdown('<div class="sec-hdr">🎛 Filter View</div>', unsafe_allow_html=True)
-
-    f1, f2, f3 = st.columns(3)
-    with f1:
-        sel_locations = st.multiselect(
-            "📍 Location",
-            options=LOCATION_ORDER,
-            default=LOCATION_ORDER,
-            key="dash_loc",
-            label_visibility="visible",
-        )
-    with f2:
-        all_codes = (
-            dm[["Lining_System_Code", "Lining_System_Short_Name"]]
-            .drop_duplicates()
+    # ── Shared filter controls (used by both views) ───────────────────────────
+    st.markdown('<div class="sec-hdr">🎛 Filter</div>', unsafe_allow_html=True)
+    df1, df2_col, df3, df4 = st.columns(4)
+    with df1:
+        sel_locations = st.multiselect("📍 Location", options=LOCATION_ORDER,
+                                        default=LOCATION_ORDER, key="dash_loc")
+    with df2_col:
+        all_types_d = sorted(eq_master["Type"].str.strip().unique().tolist())
+        sel_types = st.multiselect("🏷 Type", options=all_types_d,
+                                    default=all_types_d, key="dash_type")
+    with df3:
+        all_codes_d = (
+            dm[["Lining_System_Code","Lining_System_Short_Name"]].drop_duplicates()
             .sort_values("Lining_System_Code", key=lambda x: x.astype(int))
         )
-        code_options = [f"Code {r.Lining_System_Code} – {r.Lining_System_Short_Name}"
-                        for _, r in all_codes.iterrows()]
-        sel_codes_raw = st.multiselect(
-            "⚙️ System Code",
-            options=code_options,
-            default=code_options,
-            key="dash_code",
-        )
-        sel_codes = [c.split(" – ")[0].replace("Code ", "").strip()
-                     for c in sel_codes_raw]
-    with f3:
-        mat_options = sorted(total_demand_df["Material_Code"].unique())
-        sel_mats = st.multiselect(
-            "🧪 Material",
-            options=mat_options,
-            default=mat_options,
-            key="dash_mat",
-            format_func=lambda m: f"{m}  –  "
-                f"{total_demand_df.set_index('Material_Code')['Material_Name'].get(m, m)[:28]}",
-        )
+        code_opts_d = [f"Code {r.Lining_System_Code} – {r.Lining_System_Short_Name}"
+                       for _, r in all_codes_d.iterrows()]
+        sel_codes_raw = st.multiselect("⚙️ System Code", options=code_opts_d,
+                                        default=code_opts_d, key="dash_code")
+        sel_codes = [c.split(" – ")[0].replace("Code ","").strip() for c in sel_codes_raw]
+    with df4:
+        all_desc_d = sorted(eq_master["Description"].dropna().unique().tolist())
+        sel_desc = st.multiselect("📋 Description", options=all_desc_d,
+                                   default=all_desc_d, key="dash_desc")
 
-    # ── Apply filters to equipment set ────────────────────────────────────────
-    filtered_tags = eq_master[eq_master["Location"].isin(sel_locations)]["Equipment_Tag_No."].tolist()
-    filtered_dm   = dm[
+    # ── Apply filters ─────────────────────────────────────────────────────────
+    filtered_eq = eq_master[
+        eq_master["Location"].isin(sel_locations) &
+        eq_master["Type"].str.strip().isin(sel_types) &
+        eq_master["Description"].isin(sel_desc)
+    ]
+    if sel_codes:
+        tags_w_code = dm[dm["Lining_System_Code"].isin(sel_codes)]["Equipment_Tag_No."].unique()
+        filtered_eq = filtered_eq[filtered_eq["Equipment_Tag_No."].isin(tags_w_code)]
+    filtered_tags = filtered_eq["Equipment_Tag_No."].tolist()
+
+    filtered_dm = dm[
         (dm["Equipment_Tag_No."].isin(filtered_tags)) &
-        (dm["Lining_System_Code"].isin(sel_codes)) &
-        (dm["Material_Code"].isin(sel_mats))
+        (dm["Lining_System_Code"].isin(sel_codes))
     ].copy()
 
+    # ── Correct SQM using sqm_ref (never sum from dm — inflated x n_materials) ─
+    proj_sqm = sqm_ref[
+        sqm_ref["Equipment_Tag_No."].isin(filtered_tags) &
+        sqm_ref["Lining_System_Code"].isin(sel_codes)
+    ]["Total_SQM"].sum()
+
+    # ── Material demand aggregation ───────────────────────────────────────────
     f_demand = (
-        filtered_dm.groupby(["Material_Code", "Material_Name", "UOM"], as_index=False)
+        filtered_dm.groupby(["Material_Code","Material_Name","UOM"], as_index=False)
         ["Demand_Qty"].sum()
     )
     f_demand = f_demand.merge(
-        inv[["Material_Code", "Available_Qty"]], on="Material_Code", how="left"
+        inv[["Material_Code","Available_Qty","Ordered_Qty"]], on="Material_Code", how="left"
     )
     f_demand["Available_Qty"] = f_demand["Available_Qty"].fillna(0)
-    f_demand["Shortfall"]     = (
-        f_demand["Demand_Qty"] - f_demand["Available_Qty"]
+    f_demand["Ordered_Qty"]   = f_demand["Ordered_Qty"].fillna(0)
+    f_demand["Shortfall"]     = (f_demand["Demand_Qty"] - f_demand["Available_Qty"]).clip(lower=0).round(3)
+    f_demand["Net_Shortfall"] = (
+        f_demand["Demand_Qty"] - f_demand["Available_Qty"] - f_demand["Ordered_Qty"]
     ).clip(lower=0).round(3)
     f_demand["Coverage_Pct"]  = (
-        f_demand["Available_Qty"].clip(upper=f_demand["Demand_Qty"])
-        / f_demand["Demand_Qty"].replace(0, np.nan) * 100
-    ).fillna(100).clip(0, 100).round(1)
+        f_demand["Available_Qty"].clip(upper=f_demand["Demand_Qty"]) /
+        f_demand["Demand_Qty"].replace(0, np.nan) * 100
+    ).fillna(100).clip(0,100).round(1)
 
     f_total_demand = f_demand["Demand_Qty"].sum()
     f_total_avail  = f_demand["Available_Qty"].clip(upper=f_demand["Demand_Qty"]).sum()
     f_total_short  = f_demand["Shortfall"].sum()
+    f_total_net    = f_demand["Net_Shortfall"].sum()
     f_cov          = (f_total_avail / f_total_demand * 100) if f_total_demand > 0 else 100
-    f_n_critical   = (f_demand["Coverage_Pct"] < 50).sum()
-    f_n_ok         = (f_demand["Coverage_Pct"] >= 100).sum()
-    f_sqm          = filtered_dm["Total_SQM"].sum() if not filtered_dm.empty else 0
+    can_sqm        = round(proj_sqm * min(1.0, f_cov/100), 2)
+    short_sqm      = round(proj_sqm - can_sqm, 2)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    # ─────────────────────────────────────────────────────────────────────────
+    if dash_view == "📈 Project Overview":
+    # ─────────────────────────────────────────────────────────────────────────
 
-    # ── KPI strip ─────────────────────────────────────────────────────────────
-    st.markdown('<div class="sec-hdr">📈 Project Overview</div>', unsafe_allow_html=True)
+        # KPI strip
+        k1,k2,k3,k4,k5,k6,k7 = st.columns(7)
+        k1.metric("Equipment",         len(filtered_tags))
+        k2.metric("Total SQM",         f"{proj_sqm:,.1f}")
+        k3.metric("SQM Achievable",    f"{can_sqm:,.1f}  ({f_cov:.0f}%)")
+        k4.metric("SQM Deficit",       f"{short_sqm:,.1f}")
+        k5.metric("Overall Coverage",  f"{f_cov:.1f}%", delta=f"{f_cov-100:.1f}%")
+        k6.metric("Total Shortfall",   f"{f_total_short:,.0f}")
+        k7.metric("Critical (<50%)",   int((f_demand["Coverage_Pct"]<50).sum()))
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    kp1,kp2,kp3,kp4,kp5,kp6,kp7 = st.columns(7)
-    kp1.metric("Equipment",           len(filtered_tags))
-    kp2.metric("Total SQM",           f"{f_sqm:,.0f}")
-    kp3.metric("Materials Tracked",   len(f_demand))
-    kp4.metric("Total Demand",        f"{f_total_demand:,.0f}")
-    kp5.metric("Overall Coverage",    f"{f_cov:.1f}%",
-               delta=f"{f_cov - 100:.1f}%")
-    kp6.metric("Total Shortfall",     f"{f_total_short:,.0f}")
-    kp7.metric("Critical (<50%)",     f_n_critical)
+        row1a, row1b = st.columns([1,1.6], gap="large")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── ROW 1: Coverage gauge + Location breakdown side by side ───────────────
-    row1_left, row1_right = st.columns([1, 1.6], gap="large")
-
-    with row1_left:
-        st.markdown('<div class="sec-hdr">🎯 Overall Coverage</div>', unsafe_allow_html=True)
-
-        # Gauge chart
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=round(f_cov, 1),
-            delta={"reference": 100, "valueformat": ".1f",
-                   "decreasing": {"color": "#EF4444"},
-                   "increasing": {"color": "#10B981"}},
-            number={"suffix": "%", "font": {"family": "JetBrains Mono", "size": 36,
-                                             "color": "#F8FAFC"}},
-            gauge={
-                "axis": {"range": [0, 100], "tickwidth": 1,
-                         "tickcolor": "rgba(255,255,255,.2)",
-                         "tickfont": {"family": "JetBrains Mono", "size": 9}},
-                "bar":  {"color": (
-                    "#10B981" if f_cov >= 100 else
-                    "#F97316" if f_cov >= 90 else
-                    "#EAB308" if f_cov >= 80 else "#EF4444"
-                ), "thickness": 0.28},
-                "bgcolor": "rgba(0,0,0,0)",
-                "borderwidth": 0,
-                "steps": [
-                    {"range": [0,  50], "color": "rgba(239,68,68,.08)"},
-                    {"range": [50, 80], "color": "rgba(234,179,8,.08)"},
-                    {"range": [80, 90], "color": "rgba(249,115,22,.08)"},
-                    {"range": [90,100], "color": "rgba(16,185,129,.08)"},
-                ],
-                "threshold": {
-                    "line": {"color": "#F59E0B", "width": 2},
-                    "thickness": 0.75, "value": f_cov,
+        with row1a:
+            st.markdown('<div class="sec-hdr">🎯 Overall Coverage</div>', unsafe_allow_html=True)
+            fig_g = go.Figure(go.Indicator(
+                mode="gauge+number+delta",
+                value=round(f_cov,1),
+                delta={"reference":100,"valueformat":".1f",
+                       "decreasing":{"color":"#EF4444"},"increasing":{"color":"#10B981"}},
+                number={"suffix":"%","font":{"family":"JetBrains Mono","size":36,"color":"var(--t0)"}},
+                gauge={
+                    "axis":{"range":[0,100],"tickwidth":1,
+                            "tickfont":{"family":"JetBrains Mono","size":9}},
+                    "bar":{"color":(
+                        "#10B981" if f_cov>=100 else "#F97316" if f_cov>=90
+                        else "#EAB308" if f_cov>=80 else "#EF4444"), "thickness":0.28},
+                    "bgcolor":"rgba(0,0,0,0)","borderwidth":0,
+                    "steps":[
+                        {"range":[0,50],"color":"rgba(239,68,68,.08)"},
+                        {"range":[50,80],"color":"rgba(234,179,8,.08)"},
+                        {"range":[80,90],"color":"rgba(249,115,22,.08)"},
+                        {"range":[90,100],"color":"rgba(16,185,129,.08)"},
+                    ],
                 },
-            },
-            title={"text": "Inventory Coverage vs Total Demand",
-                   "font": {"family": "JetBrains Mono", "size": 10,
-                            "color": "rgba(255,255,255,.4)"}},
-        ))
-        fig_gauge.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=30, b=10),
-            height=240,
-        )
-        st.plotly_chart(fig_gauge, use_container_width=True, key="dash_gauge")
+                title={"text":f"Coverage  ·  {can_sqm:,.0f} / {proj_sqm:,.0f} SQM achievable",
+                       "font":{"family":"JetBrains Mono","size":9,"color":"rgba(148,163,184,.7)"}},
+            ))
+            fig_g.update_layout(paper_bgcolor="rgba(0,0,0,0)",
+                                margin=dict(l=20,r=20,t=30,b=10),height=240)
+            st.plotly_chart(fig_g, use_container_width=True, key="dash_gauge")
 
-        # Demand vs Available mini bar
-        fig_dmini = go.Figure()
-        fig_dmini.add_trace(go.Bar(
-            name="Available", x=["Inventory"],
-            y=[f_total_avail],
-            marker_color="#10B981", marker_opacity=.8,
-            text=[f"{f_total_avail:,.0f}"], textposition="auto",
-            textfont=dict(family="JetBrains Mono", size=10),
-        ))
-        fig_dmini.add_trace(go.Bar(
-            name="Shortfall", x=["Inventory"],
-            y=[f_total_short],
-            marker_color="#EF4444", marker_opacity=.8,
-            text=[f"{f_total_short:,.0f}"], textposition="auto",
-            textfont=dict(family="JetBrains Mono", size=10),
-        ))
-        fig_dmini.update_layout(
-            barmode="stack",
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0, r=0, t=0, b=0), height=120,
-            showlegend=True,
-            legend=dict(orientation="h", y=1.15, x=0,
-                        font=dict(family="JetBrains Mono", size=9),
-                        bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(showgrid=False, showticklabels=False),
-            yaxis=dict(gridcolor="rgba(255,255,255,.06)", showticklabels=False),
-        )
-        st.plotly_chart(fig_dmini, use_container_width=True, key="dash_dmini")
+            # Demand vs Available mini stacked bar
+            fig_dm = go.Figure()
+            fig_dm.add_trace(go.Bar(name="Available",x=["Inventory"],y=[f_total_avail],
+                marker_color="#10B981",marker_opacity=.8,
+                text=[f"{f_total_avail:,.0f}"],textposition="auto",
+                textfont=dict(family="JetBrains Mono",size=10)))
+            fig_dm.add_trace(go.Bar(name="Shortfall",x=["Inventory"],y=[f_total_short],
+                marker_color="#EF4444",marker_opacity=.8,
+                text=[f"{f_total_short:,.0f}"],textposition="auto",
+                textfont=dict(family="JetBrains Mono",size=10)))
+            fig_dm.update_layout(barmode="stack",paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",margin=dict(l=0,r=0,t=0,b=0),height=120,
+                showlegend=True,
+                legend=dict(orientation="h",y=1.15,x=0,
+                            font=dict(family="JetBrains Mono",size=9),bgcolor="rgba(0,0,0,0)"),
+                xaxis=dict(showgrid=False,showticklabels=False),
+                yaxis=dict(gridcolor="rgba(128,128,128,.1)",showticklabels=False))
+            st.plotly_chart(fig_dm, use_container_width=True, key="dash_dmini")
 
-    with row1_right:
-        st.markdown('<div class="sec-hdr">📍 Coverage by Location</div>',
+        with row1b:
+            st.markdown('<div class="sec-hdr">📍 Coverage by Location (SQM)</div>',
+                        unsafe_allow_html=True)
+            loc_rows = []
+            for loc in sel_locations:
+                loc_tags = filtered_eq[filtered_eq["Location"]==loc]["Equipment_Tag_No."].tolist()
+                loc_dm_f = filtered_dm[filtered_dm["Equipment_Tag_No."].isin(loc_tags)]
+                if loc_dm_f.empty: continue
+                loc_agg = (loc_dm_f.groupby("Material_Code",as_index=False)["Demand_Qty"].sum()
+                    .merge(inv[["Material_Code","Available_Qty"]],on="Material_Code",how="left"))
+                loc_agg["Available_Qty"] = loc_agg["Available_Qty"].fillna(0)
+                loc_d = loc_agg["Demand_Qty"].sum()
+                loc_a = loc_agg["Available_Qty"].clip(upper=loc_agg["Demand_Qty"]).sum()
+                loc_s = (loc_agg["Demand_Qty"]-loc_agg["Available_Qty"]).clip(lower=0).sum()
+                loc_c = (loc_a/loc_d*100) if loc_d>0 else 100
+                # ✅ Correct SQM using sqm_ref
+                loc_sqm = sqm_ref[
+                    sqm_ref["Equipment_Tag_No."].isin(loc_tags) &
+                    sqm_ref["Lining_System_Code"].isin(sel_codes)
+                ]["Total_SQM"].sum()
+                loc_can = round(loc_sqm * min(1.0, loc_c/100), 2)
+                loc_rows.append({"Location":loc,"Equipment":len(loc_tags),
+                    "SQM":loc_sqm,"SQM_Can":loc_can,"SQM_Short":round(loc_sqm-loc_can,2),
+                    "Demand":loc_d,"Available":loc_a,"Shortfall":loc_s,"Coverage_%":round(loc_c,1)})
+
+            if loc_rows:
+                loc_df = pd.DataFrame(loc_rows)
+                loc_colors_map = {"Brown Field":"#3B82F6","TRAIN J":"#F59E0B","TRAIN K":"#10B981"}
+                fig_loc = go.Figure()
+                for _, lr in loc_df.iterrows():
+                    c = loc_colors_map.get(lr["Location"],"#94A3B8")
+                    fig_loc.add_trace(go.Bar(
+                        x=[lr["Location"]],y=[lr["SQM_Can"]],name=f'{lr["Location"]} Can Do',
+                        marker_color=c,marker_opacity=.8,
+                        text=[f'{lr["Coverage_%"]:.0f}%\n{lr["SQM_Can"]:,.0f} SQM'],
+                        textposition="inside",textfont=dict(family="JetBrains Mono",size=10,color="#fff"),
+                        showlegend=False))
+                    fig_loc.add_trace(go.Bar(
+                        x=[lr["Location"]],y=[lr["SQM_Short"]],name=f'{lr["Location"]} Deficit',
+                        marker_color="#EF4444",marker_opacity=.6,
+                        text=[f'{lr["SQM_Short"]:,.0f} SQM deficit'],
+                        textposition="inside",textfont=dict(family="JetBrains Mono",size=9,color="#fff"),
+                        showlegend=False))
+                fig_loc.update_layout(barmode="stack",paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",margin=dict(l=0,r=0,t=10,b=0),height=220,
+                    xaxis=dict(tickfont=dict(family="JetBrains Mono",size=11)),
+                    yaxis=dict(gridcolor="rgba(128,128,128,.08)",
+                               title=dict(text="SQM",font=dict(family="JetBrains Mono",size=9))),
+                    font=dict(family="JetBrains Mono",size=10,color="rgba(148,163,184,.8)"))
+                st.plotly_chart(fig_loc, use_container_width=True, key="dash_loc_bar")
+
+                # Location stat cards
+                cols_loc = st.columns(len(loc_rows))
+                for col, lr in zip(cols_loc, loc_rows):
+                    dot = ("🟢" if lr["Coverage_%"]>=100 else "🟠" if lr["Coverage_%"]>=90
+                           else "🟡" if lr["Coverage_%"]>=80 else "🔴")
+                    loc_html = (
+                        '<div class="card" style="text-align:center;padding:.7rem;">'
+                        f'<div style="font-size:1.1rem;">{dot}</div>'
+                        '<div style="font-family:\'JetBrains Mono\',monospace;font-size:.72rem;'
+                        f'font-weight:700;color:var(--amber);margin:.2rem 0;">{lr["Location"]}</div>'
+                        '<div style="font-family:\'JetBrains Mono\',monospace;font-size:1.1rem;'
+                        f'font-weight:700;color:var(--t0);">{lr["Coverage_%"]:.1f}%</div>'
+                        f'<div style="font-size:.68rem;color:var(--t3);">'
+                        f'{lr["SQM_Can"]:,.0f} / {lr["SQM"]:,.0f} SQM</div>'
+                        f'<div style="font-size:.65rem;color:var(--t3);">{lr["Equipment"]} equipment</div>'
+                        '</div>'
+                    )
+                    col.markdown(loc_html, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        row2a, row2b = st.columns(2, gap="large")
+
+        with row2a:
+            st.markdown('<div class="sec-hdr">⚙️ Coverage by System Code (SQM)</div>',
+                        unsafe_allow_html=True)
+            sc_rows = []
+            for code in sel_codes:
+                sc_dm = filtered_dm[filtered_dm["Lining_System_Code"]==code]
+                if sc_dm.empty: continue
+                sname = sc_dm["Lining_System_Short_Name"].iloc[0]
+                sc_agg = (sc_dm.groupby("Material_Code",as_index=False)["Demand_Qty"].sum()
+                    .merge(inv[["Material_Code","Available_Qty"]],on="Material_Code",how="left"))
+                sc_agg["Available_Qty"] = sc_agg["Available_Qty"].fillna(0)
+                sc_d = sc_agg["Demand_Qty"].sum()
+                sc_a = sc_agg["Available_Qty"].clip(upper=sc_agg["Demand_Qty"]).sum()
+                sc_s = (sc_agg["Demand_Qty"]-sc_agg["Available_Qty"]).clip(lower=0).sum()
+                sc_c = (sc_a/sc_d*100) if sc_d>0 else 100
+                # ✅ Correct SQM
+                sc_sqm = sqm_ref[
+                    sqm_ref["Equipment_Tag_No."].isin(filtered_tags) &
+                    (sqm_ref["Lining_System_Code"]==code)
+                ]["Total_SQM"].sum()
+                sc_can = round(sc_sqm * min(1.0, sc_c/100), 2)
+                sc_rows.append({"Code":f"Code {code}","Short_Name":sname,
+                    "SQM":sc_sqm,"SQM_Can":sc_can,"SQM_Short":round(sc_sqm-sc_can,2),
+                    "Coverage_%":round(sc_c,1)})
+
+            if sc_rows:
+                sc_df = pd.DataFrame(sc_rows).sort_values("Coverage_%")
+                bar_c = ["#10B981" if c>=100 else "#F97316" if c>=90
+                         else "#EAB308" if c>=80 else "#EF4444" for c in sc_df["Coverage_%"]]
+                fig_sc = go.Figure(go.Bar(
+                    y=sc_df["Code"]+"  "+sc_df["Short_Name"],x=sc_df["Coverage_%"],
+                    orientation="h",marker_color=bar_c,marker_opacity=.8,
+                    text=[f"{v:.0f}%  ({r['SQM_Can']:,.0f}/{r['SQM']:,.0f} SQM)"
+                          for v,(_,r) in zip(sc_df["Coverage_%"],sc_df.iterrows())],
+                    textposition="inside",textfont=dict(family="JetBrains Mono",size=9,color="#fff"),
+                ))
+                fig_sc.add_vline(x=100,line_color="rgba(128,128,128,.2)",
+                                 line_dash="dot",line_width=1)
+                fig_sc.update_layout(paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    margin=dict(l=0,r=30,t=5,b=0),
+                    height=max(220,len(sc_df)*42),
+                    xaxis=dict(range=[0,115],gridcolor="rgba(128,128,128,.08)",
+                               tickfont=dict(family="JetBrains Mono",size=9)),
+                    yaxis=dict(gridcolor="rgba(128,128,128,.08)",
+                               tickfont=dict(family="JetBrains Mono",size=9)),
+                    font=dict(family="JetBrains Mono",size=10,color="rgba(148,163,184,.8)"))
+                st.plotly_chart(fig_sc, use_container_width=True, key="dash_sc_bar")
+
+                sc_show = sc_df.copy()
+                sc_show.columns = ["Code","Short Name","SQM Total","SQM Can Do",
+                                   "SQM Deficit","Coverage %"]
+                sc_show[["SQM Total","SQM Can Do","SQM Deficit"]] = (
+                    sc_show[["SQM Total","SQM Can Do","SQM Deficit"]].round(1))
+                st.dataframe(sc_show,use_container_width=True,hide_index=True,
+                             key="dash_sc_tbl")
+
+        with row2b:
+            st.markdown('<div class="sec-hdr">🧪 Coverage by Material</div>',
+                        unsafe_allow_html=True)
+            mat_rows_d = f_demand.copy().sort_values("Coverage_Pct")
+            if not mat_rows_d.empty:
+                bar_cm = ["#10B981" if c>=100 else "#F97316" if c>=90
+                          else "#EAB308" if c>=80 else "#EF4444"
+                          for c in mat_rows_d["Coverage_Pct"]]
+                fig_mat = go.Figure(go.Bar(
+                    y=mat_rows_d["Material_Code"]+"  "+mat_rows_d["Material_Name"].fillna("").str[:18],
+                    x=mat_rows_d["Coverage_Pct"],orientation="h",
+                    marker_color=bar_cm,marker_opacity=.8,
+                    text=[f"{v:.0f}%" for v in mat_rows_d["Coverage_Pct"]],
+                    textposition="inside",textfont=dict(family="JetBrains Mono",size=9,color="#fff"),
+                    customdata=mat_rows_d[["Available_Qty","Demand_Qty","Shortfall","UOM"]].values,
+                    hovertemplate=(
+                        "<b>%{y}</b><br>Coverage: %{x:.1f}%<br>"
+                        "Available: %{customdata[0]:,.1f} %{customdata[3]}<br>"
+                        "Demand: %{customdata[1]:,.1f} %{customdata[3]}<br>"
+                        "Shortfall: %{customdata[2]:,.1f} %{customdata[3]}<extra></extra>"
+                    ),
+                ))
+                fig_mat.add_vline(x=100,line_color="rgba(128,128,128,.2)",
+                                  line_dash="dot",line_width=1)
+                fig_mat.update_layout(paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",margin=dict(l=0,r=30,t=5,b=0),
+                    height=max(340,len(mat_rows_d)*34),
+                    xaxis=dict(range=[0,115],gridcolor="rgba(128,128,128,.08)",
+                               tickfont=dict(family="JetBrains Mono",size=9)),
+                    yaxis=dict(gridcolor="rgba(128,128,128,.08)",
+                               tickfont=dict(family="JetBrains Mono",size=9)),
+                    font=dict(family="JetBrains Mono",size=10,color="rgba(148,163,184,.8)"))
+                st.plotly_chart(fig_mat, use_container_width=True, key="dash_mat_bar")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="sec-hdr">📋 Full Material Balance</div>',
+                    unsafe_allow_html=True)
+        tbl_d = f_demand.sort_values("Coverage_Pct").copy()
+        tbl_show = tbl_d[["Material_Code","Material_Name","UOM",
+                           "Available_Qty","Ordered_Qty","Demand_Qty","Shortfall","Net_Shortfall","Coverage_Pct"]].copy()
+        tbl_show.columns = ["Code","Material Name","UOM",
+                             "Available","On Order","Total Demand","Shortfall","Net Shortfall","Coverage %"]
+
+        def _style_cov(row):
+            pct = row["Coverage %"]
+            if pd.isna(pct): pct = 100.0
+            if pct>=100:   bg,tc = "rgba(16,185,129,.1)","#10B981"
+            elif pct>=90:  bg,tc = "rgba(249,115,22,.1)","#F97316"
+            elif pct>=80:  bg,tc = "rgba(234,179,8,.1)", "#EAB308"
+            else:          bg,tc = "rgba(239,68,68,.1)", "#EF4444"
+            styles = [f"background-color:{bg}"]*len(row)
+            styles[-1] = f"background-color:{bg};color:{tc};font-weight:700"
+            return styles
+
+        styled_tbl = tbl_show.style.apply(_style_cov,axis=1).format({
+            "Available":"{:,.2f}","On Order":"{:,.2f}",
+            "Total Demand":"{:,.2f}","Shortfall":"{:,.2f}",
+            "Net Shortfall":"{:,.2f}","Coverage %":"{:.1f}%"})
+        st.dataframe(styled_tbl,use_container_width=True,hide_index=True,
+                     height=50+len(tbl_show)*35,key="dash_mat_tbl")
+
+        # ── Stock-only materials (in inventory but not used in any recipe/demand) ──
+        recipe_codes = set(dm["Material_Code"].unique())
+        stock_only = inv[~inv["Material_Code"].isin(recipe_codes)].copy()
+        if not stock_only.empty:
+            st.markdown(
+                '<div class="sec-hdr" style="margin-top:.8rem;">'
+                '📦 Stock-Only Materials (No Demand in Any System Code)</div>',
+                unsafe_allow_html=True)
+            st.caption(
+                "These materials are in your inventory but are not used "
+                "in any lining system recipe. No demand is generated for them.")
+            so_show = stock_only[["Material_Code","Material_Name","UOM",
+                                   "Available_Qty","Ordered_Qty"]].copy()
+            so_show["Ordered_Qty"] = so_show["Ordered_Qty"].fillna(0)
+            so_show.columns = ["Code","Material Name","UOM","Available","On Order"]
+            st.dataframe(so_show, use_container_width=True, hide_index=True,
+                         key="dash_stock_only")
+
+        da, db = st.columns(2)
+        with da:
+            st.download_button("⬇ Download Material Balance",
+                data=excel_bytes(tbl_show.reset_index(drop=True)),
+                file_name="dashboard_material_balance.xlsx",
+                mime="application/vnd.ms-excel",use_container_width=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    else:  # 🛒 Material Requirement & Procurement
+    # ─────────────────────────────────────────────────────────────────────────
+
+        st.markdown('<div class="sec-hdr">🛒 Material Requirement & Procurement — Location / System Code View</div>',
                     unsafe_allow_html=True)
 
-        loc_rows = []
+        # KPI strip
+        p1,p2,p3,p4,p5,p6 = st.columns(6)
+        p1.metric("Equipment",        len(filtered_tags))
+        p2.metric("Total SQM",        f"{proj_sqm:,.1f}")
+        p3.metric("SQM Achievable",   f"{can_sqm:,.1f}  ({f_cov:.0f}%)")
+        p4.metric("SQM Deficit",      f"{short_sqm:,.1f}")
+        p5.metric("Shortfall Units",  f"{f_total_short:,.0f}")
+        p6.metric("After Orders (Net)",f"{f_total_net:,.0f}")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Per-location, per-system-code breakdown
         for loc in sel_locations:
-            loc_tags   = eq_master[eq_master["Location"]==loc]["Equipment_Tag_No."].tolist()
-            loc_dm_f   = filtered_dm[filtered_dm["Equipment_Tag_No."].isin(loc_tags)]
-            if loc_dm_f.empty:
-                continue
-            loc_agg = (
-                loc_dm_f.groupby("Material_Code", as_index=False)["Demand_Qty"].sum()
-                .merge(inv[["Material_Code","Available_Qty"]], on="Material_Code", how="left")
-            )
+            loc_tags = filtered_eq[filtered_eq["Location"]==loc]["Equipment_Tag_No."].tolist()
+            if not loc_tags: continue
+
+            loc_dm = filtered_dm[filtered_dm["Equipment_Tag_No."].isin(loc_tags)]
+            if loc_dm.empty: continue
+
+            loc_sqm = sqm_ref[
+                sqm_ref["Equipment_Tag_No."].isin(loc_tags) &
+                sqm_ref["Lining_System_Code"].isin(sel_codes)
+            ]["Total_SQM"].sum()
+
+            loc_agg = (loc_dm.groupby("Material_Code",as_index=False)["Demand_Qty"].sum()
+                .merge(inv[["Material_Code","Available_Qty","Ordered_Qty"]],
+                       on="Material_Code",how="left"))
             loc_agg["Available_Qty"] = loc_agg["Available_Qty"].fillna(0)
+            loc_agg["Ordered_Qty"]   = loc_agg["Ordered_Qty"].fillna(0)
+            loc_agg["Shortfall"]     = (loc_agg["Demand_Qty"]-loc_agg["Available_Qty"]).clip(lower=0)
+            loc_agg["Net_Shortfall"] = (loc_agg["Demand_Qty"]-loc_agg["Available_Qty"]-loc_agg["Ordered_Qty"]).clip(lower=0)
             loc_d = loc_agg["Demand_Qty"].sum()
             loc_a = loc_agg["Available_Qty"].clip(upper=loc_agg["Demand_Qty"]).sum()
-            loc_s = (loc_agg["Demand_Qty"] - loc_agg["Available_Qty"]).clip(lower=0).sum()
-            loc_c = (loc_a / loc_d * 100) if loc_d > 0 else 100
-            loc_sqm = eq_master[eq_master["Location"].isin([loc]) &
-                                 eq_master["Equipment_Tag_No."].isin(filtered_tags)]["Total_SQM"].sum()
-            loc_rows.append({"Location": loc, "Equipment": len(loc_tags),
-                              "SQM": loc_sqm, "Demand": loc_d,
-                              "Available": loc_a, "Shortfall": loc_s,
-                              "Coverage_%": round(loc_c, 1)})
+            loc_c = (loc_a/loc_d*100) if loc_d>0 else 100
+            loc_can_sqm = round(loc_sqm * min(1.0, loc_c/100), 2)
+            loc_sh_sqm  = round(loc_sqm - loc_can_sqm, 2)
+            loc_dot = "🟢" if loc_c>=100 else "🟠" if loc_c>=90 else "🟡" if loc_c>=80 else "🔴"
 
-        if loc_rows:
-            loc_df = pd.DataFrame(loc_rows)
+            badge_cls = {"Brown Field":"loc-bf","TRAIN J":"loc-tj","TRAIN K":"loc-tk"}.get(loc,"loc-bf")
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:.8rem;margin:1.2rem 0 .5rem;">'
+                f'<span style="font-size:.95rem;">{loc_dot}</span>'
+                f'<span class="loc-badge {badge_cls}">{loc}</span>'
+                f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.75rem;'
+                f'color:var(--t3);">{len(loc_tags)} equip  ·  {loc_can_sqm:,.1f}/{loc_sqm:,.1f} SQM  ·  {loc_c:.1f}%</span>'
+                f'</div>', unsafe_allow_html=True)
 
-            # Grouped bar: Available vs Shortfall per location
-            loc_colors = {"Brown Field": "#3B82F6", "TRAIN J": "#F59E0B", "TRAIN K": "#10B981"}
-            fig_loc = go.Figure()
-            for _, lr in loc_df.iterrows():
-                c = loc_colors.get(lr["Location"], "#94A3B8")
-                fig_loc.add_trace(go.Bar(
-                    name=f'{lr["Location"]} Available',
-                    x=[lr["Location"]], y=[lr["Available"]],
-                    marker_color=c, marker_opacity=.75,
-                    text=[f'{lr["Coverage_%"]:.0f}%'],
-                    textposition="inside",
-                    textfont=dict(family="JetBrains Mono", size=11, color="#fff"),
-                    showlegend=False,
-                ))
-                fig_loc.add_trace(go.Bar(
-                    name=f'{lr["Location"]} Shortfall',
-                    x=[lr["Location"]], y=[lr["Shortfall"]],
-                    marker_color="#EF4444", marker_opacity=.6,
-                    text=[f'–{lr["Shortfall"]:,.0f}'],
-                    textposition="inside",
-                    textfont=dict(family="JetBrains Mono", size=10, color="#fff"),
-                    showlegend=False,
-                ))
-            fig_loc.update_layout(
-                barmode="stack",
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=0, r=0, t=10, b=0), height=200,
-                xaxis=dict(tickfont=dict(family="JetBrains Mono", size=11,
-                                         color="rgba(255,255,255,.7)"),
-                           gridcolor="rgba(255,255,255,.06)"),
-                yaxis=dict(gridcolor="rgba(255,255,255,.06)",
-                           tickfont=dict(family="JetBrains Mono", size=9)),
-                font=dict(family="JetBrains Mono", size=10, color="#94A3B8"),
-            )
-            st.plotly_chart(fig_loc, use_container_width=True, key="dash_loc_bar")
+            # Per system code within this location
+            for code in sorted(sel_codes, key=lambda x: int(x)):
+                code_dm = loc_dm[loc_dm["Lining_System_Code"]==code]
+                if code_dm.empty: continue
+                sname = code_dm["Lining_System_Short_Name"].iloc[0]
 
-            # Location stat cards
-            cols_loc = st.columns(len(loc_rows))
-            for col, lr in zip(cols_loc, loc_rows):
-                dot = ("🟢" if lr["Coverage_%"]>=100 else "🟠" if lr["Coverage_%"]>=90
-                       else "🟡" if lr["Coverage_%"]>=80 else "🔴")
-                loc_html = (
-                    '<div class="card" style="text-align:center;padding:.7rem;">'
-                    f'<div style="font-size:1.1rem;">{dot}</div>'
-                    '<div style="font-family:\'JetBrains Mono\',monospace;font-size:.72rem;'
-                    f'font-weight:700;color:var(--amber);margin:.2rem 0;">{lr["Location"]}</div>'
-                    '<div style="font-family:\'JetBrains Mono\',monospace;font-size:1.1rem;'
-                    f'font-weight:700;color:var(--t0);">{lr["Coverage_%"]:.1f}%</div>'
-                    f'<div style="font-size:.68rem;color:var(--t3);">'
-                    f'{lr["Equipment"]} equip · {lr["SQM"]:,.0f} SQM</div>'
-                    '</div>'
-                )
-                col.markdown(loc_html, unsafe_allow_html=True)
+                # ✅ Correct SQM
+                code_sqm = sqm_ref[
+                    sqm_ref["Equipment_Tag_No."].isin(loc_tags) &
+                    (sqm_ref["Lining_System_Code"]==code)
+                ]["Total_SQM"].sum()
 
-    st.markdown("<br>", unsafe_allow_html=True)
+                code_agg = (code_dm.groupby(["Material_Code","Material_Name","UOM"],
+                                            as_index=False)["Demand_Qty"].sum()
+                    .merge(inv[["Material_Code","Available_Qty","Ordered_Qty"]],
+                           on="Material_Code",how="left"))
+                code_agg["Available_Qty"] = code_agg["Available_Qty"].fillna(0)
+                code_agg["Ordered_Qty"]   = code_agg["Ordered_Qty"].fillna(0)
+                code_agg["Shortfall"]     = (code_agg["Demand_Qty"]-code_agg["Available_Qty"]).clip(lower=0).round(3)
+                code_agg["Net_Shortfall"] = (code_agg["Demand_Qty"]-code_agg["Available_Qty"]-code_agg["Ordered_Qty"]).clip(lower=0).round(3)
+                code_agg["Coverage_Pct"]  = (
+                    code_agg["Available_Qty"].clip(upper=code_agg["Demand_Qty"]) /
+                    code_agg["Demand_Qty"].replace(0,np.nan)*100
+                ).fillna(100).clip(0,100).round(1)
+                code_agg["Fulfillment_Pct"] = code_agg["Coverage_Pct"]
 
-    # ── ROW 2: System Code coverage + Material coverage ───────────────────────
-    row2_left, row2_right = st.columns(2, gap="large")
+                cd = code_agg["Demand_Qty"].sum()
+                ca = code_agg["Available_Qty"].clip(upper=code_agg["Demand_Qty"]).sum()
+                cc = (ca/cd*100) if cd>0 else 100
+                c_can_sqm = round(code_sqm * min(1.0, cc/100), 2)
+                c_sh_sqm  = round(code_sqm - c_can_sqm, 2)
+                c_dot = "🟢" if cc>=100 else "🟠" if cc>=90 else "🟡" if cc>=80 else "🔴"
 
-    with row2_left:
-        st.markdown('<div class="sec-hdr">⚙️ Coverage by System Code</div>',
+                with st.expander(
+                    f"{c_dot}  Code {code} – {sname}  ·  "
+                    f"{c_can_sqm:,.1f}/{code_sqm:,.1f} SQM  ·  {cc:.1f}%",
+                    expanded=False,
+                ):
+                    pc1,pc2,pc3,pc4,pc5 = st.columns(5)
+                    pc1.metric("System Code", f"Code {code}")
+                    pc2.metric("Short Name",  sname)
+                    pc3.metric("SQM Total",   f"{code_sqm:,.2f}")
+                    pc4.metric("SQM Achievable", f"{c_can_sqm:,.2f}")
+                    pc5.metric("SQM Deficit",    f"{c_sh_sqm:,.2f}")
+
+                    # Table with Available, On Order, Demand, Shortfall, Net Shortfall
+                    tbl_proc = code_agg[["Material_Code","Material_Name","UOM",
+                                         "Available_Qty","Ordered_Qty","Demand_Qty",
+                                         "Shortfall","Net_Shortfall","Fulfillment_Pct"]].copy()
+                    tbl_proc.columns = ["Code","Material Name","UOM",
+                                        "Available","On Order","Demand",
+                                        "Shortfall","Net Shortfall (After Orders)","Fulfil %"]
+
+                    def _style_proc(row):
+                        pct = row["Fulfil %"]
+                        if pd.isna(pct): pct = 100.0
+                        if pct>=100:  bg,tc = "rgba(16,185,129,.1)","#10B981"
+                        elif pct>=90: bg,tc = "rgba(249,115,22,.1)","#F97316"
+                        elif pct>=80: bg,tc = "rgba(234,179,8,.1)", "#EAB308"
+                        else:         bg,tc = "rgba(239,68,68,.1)", "#EF4444"
+                        styles = [f"background-color:{bg}"]*len(row)
+                        styles[-1] = f"background-color:{bg};color:{tc};font-weight:700"
+                        return styles
+
+                    styled_proc = tbl_proc.style.apply(_style_proc,axis=1).format({
+                        "Available":"{:,.3f}","On Order":"{:,.3f}","Demand":"{:,.3f}",
+                        "Shortfall":"{:,.3f}","Net Shortfall (After Orders)":"{:,.3f}",
+                        "Fulfil %":"{:.1f}%"})
+                    st.dataframe(styled_proc,use_container_width=True,hide_index=True,
+                                 height=65+len(tbl_proc)*35,
+                                 key=f"proc_{loc}_{code}")
+
+            st.markdown('<div style="border-bottom:1px solid var(--border);margin:.8rem 0;"></div>',
+                        unsafe_allow_html=True)
+
+        # Grand total procurement table
+        st.markdown('<div class="sec-hdr" style="margin-top:1rem;">📦 Grand Total — All Selected Equipment</div>',
                     unsafe_allow_html=True)
 
-        sc_rows = []
-        for code in sel_codes:
-            sc_dm = filtered_dm[filtered_dm["Lining_System_Code"] == code]
-            if sc_dm.empty:
-                continue
-            sname = sc_dm["Lining_System_Short_Name"].iloc[0]
-            sc_agg = (
-                sc_dm.groupby("Material_Code", as_index=False)["Demand_Qty"].sum()
-                .merge(inv[["Material_Code","Available_Qty"]], on="Material_Code", how="left")
-            )
-            sc_agg["Available_Qty"] = sc_agg["Available_Qty"].fillna(0)
-            sc_d = sc_agg["Demand_Qty"].sum()
-            sc_a = sc_agg["Available_Qty"].clip(upper=sc_agg["Demand_Qty"]).sum()
-            sc_s = (sc_agg["Demand_Qty"] - sc_agg["Available_Qty"]).clip(lower=0).sum()
-            sc_c = (sc_a / sc_d * 100) if sc_d > 0 else 100
-            sc_sqm = sc_dm["Total_SQM"].sum()
-            sc_rows.append({
-                "Code": f"Code {code}", "Short_Name": sname,
-                "SQM": sc_sqm, "Demand": sc_d,
-                "Available": sc_a, "Shortfall": sc_s,
-                "Coverage_%": round(sc_c, 1),
-            })
+        grand = f_demand.sort_values("Coverage_Pct").copy()
+        grand_show = grand[["Material_Code","Material_Name","UOM",
+                             "Available_Qty","Ordered_Qty","Demand_Qty",
+                             "Shortfall","Net_Shortfall","Coverage_Pct"]].copy()
+        grand_show.columns = ["Code","Material Name","UOM",
+                               "Available","On Order","Demand",
+                               "Shortfall","Net Shortfall","Coverage %"]
 
-        if sc_rows:
-            sc_df = pd.DataFrame(sc_rows).sort_values("Coverage_%")
+        def _style_grand(row):
+            pct = row["Coverage %"]
+            if pd.isna(pct): pct=100.0
+            if pct>=100:  bg,tc = "rgba(16,185,129,.1)","#10B981"
+            elif pct>=90: bg,tc = "rgba(249,115,22,.1)","#F97316"
+            elif pct>=80: bg,tc = "rgba(234,179,8,.1)", "#EAB308"
+            else:         bg,tc = "rgba(239,68,68,.1)", "#EF4444"
+            styles = [f"background-color:{bg}"]*len(row)
+            styles[-1] = f"background-color:{bg};color:{tc};font-weight:700"
+            return styles
 
-            # Horizontal coverage bar per system code
-            fig_sc = go.Figure()
-            bar_colors = [
-                "#10B981" if c >= 100 else "#F97316" if c >= 90
-                else "#EAB308" if c >= 80 else "#EF4444"
-                for c in sc_df["Coverage_%"]
-            ]
-            fig_sc.add_trace(go.Bar(
-                y=sc_df["Code"] + "  " + sc_df["Short_Name"],
-                x=sc_df["Coverage_%"],
-                orientation="h",
-                marker_color=bar_colors, marker_opacity=.8,
-                text=[f"{v:.1f}%" for v in sc_df["Coverage_%"]],
-                textposition="inside",
-                textfont=dict(family="JetBrains Mono", size=10, color="#fff"),
-                customdata=sc_df[["SQM","Demand","Shortfall"]].values,
-                hovertemplate=(
-                    "<b>%{y}</b><br>"
-                    "Coverage: %{x:.1f}%<br>"
-                    "SQM: %{customdata[0]:,.0f}<br>"
-                    "Demand: %{customdata[1]:,.0f}<br>"
-                    "Shortfall: %{customdata[2]:,.0f}<extra></extra>"
-                ),
-            ))
-            fig_sc.add_vline(x=100, line_color="rgba(255,255,255,.15)",
-                             line_dash="dot", line_width=1)
-            fig_sc.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=0, r=30, t=5, b=0),
-                height=max(220, len(sc_df) * 42),
-                xaxis=dict(range=[0, 110], gridcolor="rgba(255,255,255,.06)",
-                           tickfont=dict(family="JetBrains Mono", size=9)),
-                yaxis=dict(gridcolor="rgba(255,255,255,.06)",
-                           tickfont=dict(family="JetBrains Mono", size=9)),
-                font=dict(family="JetBrains Mono", size=10, color="#94A3B8"),
-            )
-            st.plotly_chart(fig_sc, use_container_width=True, key="dash_sc_bar")
+        styled_grand = grand_show.style.apply(_style_grand,axis=1).format({
+            "Available":"{:,.2f}","On Order":"{:,.2f}","Demand":"{:,.2f}",
+            "Shortfall":"{:,.2f}","Net Shortfall":"{:,.2f}","Coverage %":"{:.1f}%"})
+        st.dataframe(styled_grand,use_container_width=True,hide_index=True,
+                     height=50+len(grand_show)*35,key="proc_grand_tbl")
 
-            # System code detail table
-            sc_show = sc_df.copy()
-            sc_show.columns = ["Code","Short Name","SQM","Demand","Available","Shortfall","Coverage %"]
-            sc_show[["Demand","Available","Shortfall"]] = sc_show[
-                ["Demand","Available","Shortfall"]].round(0).astype(int)
-            sc_show["SQM"] = sc_show["SQM"].round(1)
-            st.dataframe(sc_show, use_container_width=True, hide_index=True,
-                         height=35 + len(sc_show) * 35,
-                         key="dash_sc_tbl")
-
-    with row2_right:
-        st.markdown('<div class="sec-hdr">🧪 Coverage by Material</div>',
-                    unsafe_allow_html=True)
-
-        mat_rows = f_demand[f_demand["Material_Code"].isin(sel_mats)].copy()
-        mat_rows = mat_rows.sort_values("Coverage_Pct")
-
-        if not mat_rows.empty:
-            bar_colors_m = [
-                "#10B981" if c >= 100 else "#F97316" if c >= 90
-                else "#EAB308" if c >= 80 else "#EF4444"
-                for c in mat_rows["Coverage_Pct"]
-            ]
-            fig_mat = go.Figure()
-            fig_mat.add_trace(go.Bar(
-                y=mat_rows["Material_Code"] + "  " +
-                  mat_rows["Material_Name"].fillna("").str[:20],
-                x=mat_rows["Coverage_Pct"],
-                orientation="h",
-                marker_color=bar_colors_m, marker_opacity=.8,
-                text=[f"{v:.1f}%" for v in mat_rows["Coverage_Pct"]],
-                textposition="inside",
-                textfont=dict(family="JetBrains Mono", size=9, color="#fff"),
-                customdata=mat_rows[["Available_Qty","Demand_Qty","Shortfall","UOM"]].values,
-                hovertemplate=(
-                    "<b>%{y}</b><br>"
-                    "Coverage: %{x:.1f}%<br>"
-                    "Available: %{customdata[0]:,.1f} %{customdata[3]}<br>"
-                    "Demand: %{customdata[1]:,.1f} %{customdata[3]}<br>"
-                    "Shortfall: %{customdata[2]:,.1f} %{customdata[3]}"
-                    "<extra></extra>"
-                ),
-            ))
-            fig_mat.add_vline(x=100, line_color="rgba(255,255,255,.15)",
-                              line_dash="dot", line_width=1)
-            fig_mat.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=0, r=30, t=5, b=0),
-                height=max(340, len(mat_rows) * 34),
-                xaxis=dict(range=[0, 115], gridcolor="rgba(255,255,255,.06)",
-                           tickfont=dict(family="JetBrains Mono", size=9)),
-                yaxis=dict(gridcolor="rgba(255,255,255,.06)",
-                           tickfont=dict(family="JetBrains Mono", size=9)),
-                font=dict(family="JetBrains Mono", size=10, color="#94A3B8"),
-            )
-            st.plotly_chart(fig_mat, use_container_width=True, key="dash_mat_bar")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── ROW 3: Full material balance table ────────────────────────────────────
-    st.markdown('<div class="sec-hdr">📋 Full Material Balance Table</div>',
-                unsafe_allow_html=True)
-
-    mat_tbl = mat_rows.copy() if not mat_rows.empty else f_demand.copy()
-    mat_tbl = mat_tbl.sort_values("Coverage_Pct")
-
-    def _style_coverage(row):
-        pct = row["Coverage %"]
-        if pct >= 100:
-            bg, tc = "rgba(16,185,129,.1)",  "#10B981"
-        elif pct >= 90:
-            bg, tc = "rgba(249,115,22,.1)",  "#F97316"
-        elif pct >= 80:
-            bg, tc = "rgba(234,179,8,.1)",   "#EAB308"
-        else:
-            bg, tc = "rgba(239,68,68,.1)",   "#EF4444"
-        styles = [f"background-color:{bg}"] * len(row)
-        styles[-1] = f"background-color:{bg};color:{tc};font-weight:700"
-        return styles
-
-    tbl_show = mat_tbl[["Material_Code","Material_Name","UOM",
-                          "Available_Qty","Demand_Qty","Shortfall","Coverage_Pct"]].copy()
-    tbl_show.columns = ["Code","Material Name","UOM",
-                         "Available","Total Demand","Shortfall","Coverage %"]
-
-    styled_tbl = tbl_show.style.apply(_style_coverage, axis=1).format({
-        "Available":     "{:,.2f}",
-        "Total Demand":  "{:,.2f}",
-        "Shortfall":     "{:,.2f}",
-        "Coverage %":    "{:.1f}%",
-    })
-    st.dataframe(styled_tbl, use_container_width=True, hide_index=True,
-                 height=50 + len(tbl_show) * 35, key="dash_mat_tbl")
-
-    # ── Download ──────────────────────────────────────────────────────────────
-    st.markdown("<br>", unsafe_allow_html=True)
-    dl1, dl2 = st.columns(2)
-    with dl1:
-        st.download_button(
-            "⬇ Download Material Balance",
-            data=excel_bytes(tbl_show.reset_index(drop=True)),
-            file_name="dashboard_material_balance.xlsx",
-            mime="application/vnd.ms-excel",
-            use_container_width=True,
-        )
-    with dl2:
-        if sc_rows:
-            st.download_button(
-                "⬇ Download System Code Summary",
-                data=excel_bytes(sc_df.reset_index(drop=True)),
-                file_name="dashboard_syscode_summary.xlsx",
-                mime="application/vnd.ms-excel",
-                use_container_width=True,
-            )
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            st.download_button("⬇ Download Grand Procurement Table",
+                data=excel_bytes(grand_show.reset_index(drop=True)),
+                file_name="procurement_grand_total.xlsx",
+                mime="application/vnd.ms-excel",use_container_width=True)
+        with gc2:
+            shortage_net = grand[grand["Net_Shortfall"]>0][
+                ["Material_Code","Material_Name","UOM","Available_Qty","Ordered_Qty",
+                 "Demand_Qty","Shortfall","Net_Shortfall"]].copy()
+            shortage_net.columns = ["Code","Material Name","UOM","Available","On Order",
+                                    "Demand","Shortfall","NET TO ORDER"]
+            if not shortage_net.empty:
+                st.download_button("⬇ Net Order List Only",
+                    data=excel_bytes(shortage_net.reset_index(drop=True)),
+                    file_name="net_order_list.xlsx",
+                    mime="application/vnd.ms-excel",use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 · EQUIPMENT ENTRY
@@ -904,12 +1251,43 @@ with tab0:
 with tab1:
     left, right = st.columns([1, 1.65], gap="large")
 
-    # ── LEFT: search + session list ──────────────────────────────────────────
+    # ── LEFT: filter + search + session list ────────────────────────────────
     with left:
-        st.markdown('<div class="sec-hdr">🔍 Find Equipment</div>',
+        st.markdown('<div class="sec-hdr">🎛 Filter Equipment</div>',
+                    unsafe_allow_html=True)
+
+        # 3 filter selectors
+        f_loc  = st.multiselect("📍 Location", options=LOCATION_ORDER,
+                                 default=[], key="t1_loc",
+                                 placeholder="All locations")
+        all_types = sorted(eq_master["Type"].str.strip().unique().tolist())
+        f_type = st.multiselect("🏷 Type", options=all_types,
+                                 default=[], key="t1_type",
+                                 placeholder="All types")
+        all_codes_t1 = sorted(
+            dm["Lining_System_Code"].unique().tolist(), key=lambda x: int(x))
+        f_code = st.multiselect(
+            "⚙️ System Code", options=all_codes_t1,
+            format_func=lambda c: f"Code {c} – "
+                f"{dm[dm['Lining_System_Code']==c]['Lining_System_Short_Name'].iloc[0]}",
+            default=[], key="t1_code", placeholder="All system codes")
+
+        # Build filtered tag list
+        filtered_eq = eq_master.copy()
+        if f_loc:
+            filtered_eq = filtered_eq[filtered_eq["Location"].isin(f_loc)]
+        if f_type:
+            filtered_eq = filtered_eq[filtered_eq["Type"].str.strip().isin(f_type)]
+        if f_code:
+            tags_with_code = dm[dm["Lining_System_Code"].isin(f_code)][
+                "Equipment_Tag_No."].unique().tolist()
+            filtered_eq = filtered_eq[filtered_eq["Equipment_Tag_No."].isin(tags_with_code)]
+        filtered_tags_t1 = sorted(filtered_eq["Equipment_Tag_No."].tolist())
+
+        st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">🔍 Find Equipment</div>',
                     unsafe_allow_html=True)
         selected_tag = st.selectbox(
-            "tag_search", [""] + ALL_TAGS,
+            "tag_search", [""] + filtered_tags_t1,
             format_func=lambda t: (
                 "" if t == "" else
                 f"{t}  —  "
@@ -975,24 +1353,35 @@ with tab1:
                 st.session_state.session_tags = new_order
                 st.rerun()
 
-            # Show fulfillment pills below the sortable list
+            # Show fulfillment rows with ✕ remove button
             alloc_df2 = cascade_allocate(new_order)
-            for t in new_order:
+            for idx_t, t in enumerate(new_order):
                 pct  = tag_fulfillment(alloc_df2, t)
                 name = tag_name.get(t, t)
                 loc  = tag_loc.get(t, "—")
                 dot  = status_dot(pct)
-                st.markdown(
-                    f'<div class="session-equip" style="margin-bottom:.25rem;">'
-                    f'<span class="{dot}" style="font-family:\'JetBrains Mono\','
-                    f'monospace;font-size:.75rem;font-weight:600;color:var(--t1);">'
-                    f'{t}</span>'
-                    f'<span style="font-size:.78rem;color:var(--t3);margin-left:.5rem;">'
-                    f'{name[:28]}</span>'
-                    f'<span style="font-family:\'JetBrains Mono\',monospace;'
-                    f'font-size:.65rem;color:var(--t4);margin-left:.5rem;">{loc}</span>'
-                    f'<span style="float:right;">{fulfil_pill(pct)}</span>'
-                    f'</div>', unsafe_allow_html=True)
+                tag_total_sqm = sqm_ref[sqm_ref["Equipment_Tag_No."]==t]["Total_SQM"].sum()
+                can_sqm  = round(tag_total_sqm * min(1.0, pct/100), 2)
+                row_c, row_x = st.columns([9, 1])
+                with row_c:
+                    st.markdown(
+                        f'<div class="session-equip" style="margin-bottom:.22rem;">'
+                        f'<span class="{dot}" style="font-family:\'JetBrains Mono\','
+                        f'monospace;font-size:.75rem;font-weight:600;color:var(--t1);">'
+                        f'{t}</span>'
+                        f'<span style="font-size:.76rem;color:var(--t3);margin-left:.5rem;">'
+                        f'{name[:26]}</span>'
+                        f'<span style="font-family:\'JetBrains Mono\',monospace;'
+                        f'font-size:.63rem;color:var(--t4);margin-left:.4rem;">{loc}</span>'
+                        f'<span style="float:right;font-family:\'JetBrains Mono\','
+                        f'monospace;font-size:.65rem;color:var(--t3);">'
+                        f'{can_sqm:,.1f}/{tag_total_sqm:,.1f} SQM&nbsp;&nbsp;</span>'
+                        f'<span style="float:right;">{fulfil_pill(pct)}</span>'
+                        f'</div>', unsafe_allow_html=True)
+                with row_x:
+                    if st.button("✕", key=f"rm_{t}_{idx_t}", help=f"Remove {t}"):
+                        st.session_state.session_tags.remove(t)
+                        st.rerun()
 
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🗑 Clear All", key="clear_all"):
@@ -1202,9 +1591,15 @@ with tab2:
             loc       = tag_loc.get(tag, "—")
             eq_row    = eq_master[eq_master["Equipment_Tag_No."]==tag].iloc[0]
 
+            t_sqm      = sqm_ref[sqm_ref["Equipment_Tag_No."]==tag]["Total_SQM"].sum()
+            t_can_sqm  = round(t_sqm * min(1.0, t_pct/100), 2)
+            t_dot_char = "🟢" if t_pct>=100 else "🟠" if t_pct>=90 else "🟡" if t_pct>=80 else "🔴"
+            _t2_type = str(eq_row.get("Type","") or "").strip()
+            _t2_desc = str(eq_row.get("Description","") or "").strip()[:20]
+            _t2_meta = "  |  ".join(p for p in [_t2_type,_t2_desc] if p and p not in ("nan","—"))
             with st.expander(
-                f"#{i+1}  {tag}  ·  {name}  ·  {loc}  "
-                f"·  Coverage: {t_pct:.1f}%",
+                f"{t_dot_char}  #{i+1}  {tag}  ·  {name}  ·  {_t2_meta}  ·  {loc}  "
+                f"·  {t_can_sqm:,.1f}/{t_sqm:,.1f} SQM  ·  {t_pct:.1f}%",
                 expanded=False,
             ):
                 # Equipment meta strip
@@ -1228,26 +1623,32 @@ with tab2:
                     c_demand = code_alloc["Demand_Qty"].sum()
                     c_alloc  = code_alloc["Allocated_Qty"].sum()
 
+                    _, c_can_sqm, c_short_sqm = sqm_can_do(alloc_df, tag, code)
+                    c_dot = "🟢" if c_pct>=100 else "🟠" if c_pct>=90 else "🟡" if c_pct>=80 else "🔴"
                     st.markdown(
                         f'<div class="syscode-block">'
                         f'<div class="syscode-hdr">'
+                        f'<span style="font-size:.85rem;">{c_dot}</span>'
                         f'<span class="code-badge">Code {code}</span>'
                         f'<span style="font-size:.8rem;color:var(--t1);font-weight:500;">'
                         f'{sname}</span>'
                         f'<span style="font-family:\'JetBrains Mono\',monospace;'
-                        f'font-size:.72rem;color:var(--t3);">{sqm:,.2f} SQM</span>'
+                        f'font-size:.72rem;color:var(--t3);">'
+                        f'{c_can_sqm:,.1f}/{sqm:,.1f} SQM</span>'
                         f'<span style="margin-left:auto;">{fulfil_pill(c_pct)}</span>'
                         f'</div></div>',
                         unsafe_allow_html=True)
 
-                    sc1,sc2,sc3 = st.columns(3)
-                    sc1.metric("Demand",     f"{c_demand:,.2f}")
-                    sc2.metric("Allocated",  f"{c_alloc:,.2f}")
-                    sc3.metric("Shortfall",  f"{c_short:,.2f}")
+                    sc1,sc2,sc3,sc4 = st.columns(4)
+                    sc1.metric("Demand",    f"{c_demand:,.2f}")
+                    sc2.metric("Allocated", f"{c_alloc:,.2f}")
+                    sc3.metric("Shortfall", f"{c_short:,.2f}")
+                    sc4.metric("SQM Deficit", f"{c_short_sqm:,.2f}")
                     plotly_mat_table(
                         code_alloc,
                         f"rep_{tag}_{code}",
-                        height=65 + len(code_alloc)*30
+                        height=65 + len(code_alloc)*30,
+                        show_sqm=True, tag=tag, code=code
                     )
 
                 # Equipment grand total row
@@ -1286,6 +1687,21 @@ with tab2:
             combined["Allocated_Qty"] /
             combined["Demand_Qty"].replace(0, np.nan) * 100
         ).fillna(100).clip(0,100).round(2)
+
+        # ── SQM per material: sum of SQM across every (tag,code) cell it touches,
+        #    weighted by that cell's fulfillment ──────────────────────────────
+        _sqm_per_mat = alloc_df.copy()
+        _sqm_per_mat["SQM_Done_Cell"] = (
+            _sqm_per_mat["Total_SQM"] * _sqm_per_mat["Fulfillment_Pct"] / 100
+        )
+        _sqm_agg = _sqm_per_mat.groupby("Material_Code", as_index=False).agg(
+            SQM_Total =("Total_SQM",     "sum"),
+            SQM_Done  =("SQM_Done_Cell", "sum"),
+        )
+        _sqm_agg["SQM_Deficit"] = (_sqm_agg["SQM_Total"] - _sqm_agg["SQM_Done"]).round(2)
+        _sqm_agg["SQM_Total"]   = _sqm_agg["SQM_Total"].round(2)
+        _sqm_agg["SQM_Done"]    = _sqm_agg["SQM_Done"].round(2)
+        combined = combined.merge(_sqm_agg, on="Material_Code", how="left")
         combined = combined.sort_values("Fulfillment_Pct")
 
         # Stacked bar (shortage only)
@@ -1376,6 +1792,9 @@ with tab2:
                                    use_container_width=True)
 
 
+        # ── Smart Reordering Suggestions ──────────────────────────────────────
+        render_suggestion_panel(session_tags, "tab2")
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3 · LOCATION REPORT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1440,14 +1859,22 @@ with tab3:
             loc_alloc["Allocated_Qty"].sum()/loc_demand*100
         ) if loc_demand > 0 else 100
 
+        # Location SQM (correct: sum unique (tag,code) SQM, not from dm)
+        loc_sqm_total = sqm_ref[sqm_ref["Equipment_Tag_No."].isin(loc_tags_all)]["Total_SQM"].sum()
+        loc_can_sqm   = round(loc_sqm_total * min(1.0, loc_pct/100), 2)
+        loc_dot       = "🟢" if loc_pct>=100 else "🟠" if loc_pct>=90 else "🟡" if loc_pct>=80 else "🔴"
+
         # Location header
         st.markdown(
             f'<div style="display:flex;align-items:center;gap:1rem;'
             f'margin:1.2rem 0 .7rem;">'
+            f'<span style="font-size:.95rem;">{loc_dot}</span>'
             f'<span class="loc-badge {badge_cls}" style="font-size:.76rem;'
             f'padding:.28rem .9rem;">{loc}</span>'
             f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.75rem;'
-            f'color:var(--t4);">{len(loc_tags_all)} equipment</span>'
+            f'color:var(--t4);">{len(loc_tags_all)} equip</span>'
+            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.75rem;'
+            f'color:var(--t3);">{loc_can_sqm:,.1f}/{loc_sqm_total:,.1f} SQM</span>'
             f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.75rem;'
             f'color:{"#EF4444" if loc_short>0 else "#10B981"};">'
             f'Shortfall: {loc_short:,.1f}</span>'
@@ -1464,10 +1891,15 @@ with tab3:
             eq_row    = eq_master[eq_master["Equipment_Tag_No."]==tag].iloc[0]
             dot       = status_dot(t_pct)
 
-            _dot_char = "🟢" if t_pct>=100 else "🟠" if t_pct>=90 else "🟡" if t_pct>=80 else "🔴"
+            _dot_char  = "🟢" if t_pct>=100 else "🟠" if t_pct>=90 else "🟡" if t_pct>=80 else "🔴"
+            _t3_sqm    = sqm_ref[sqm_ref["Equipment_Tag_No."]==tag]["Total_SQM"].sum()
+            _t3_cansqm = round(_t3_sqm * min(1.0, t_pct/100), 2)
+            _t3_type   = str(eq_row.get("Type","") or "").strip()
+            _t3_desc   = str(eq_row.get("Description","") or "").strip()[:20]
+            _t3_meta   = "  |  ".join(p for p in [_t3_type,_t3_desc] if p and p not in ("nan","—"))
             with st.expander(
-                f"{_dot_char}  {tag}  ·  {eq_row['Name']}  ·  "
-                f"{eq_row['Total_SQM']:,.2f} SQM  ·  Coverage: {t_pct:.1f}%",
+                f"{_dot_char}  {tag}  ·  {eq_row['Name']}  ·  {_t3_meta}  ·  "
+                f"{_t3_cansqm:,.1f}/{_t3_sqm:,.1f} SQM  ·  {t_pct:.1f}%",
                 expanded=False,
             ):
                 c1,c2,c3 = st.columns(3)
@@ -1486,20 +1918,25 @@ with tab3:
                     sqm   = code_alloc["Total_SQM"].iloc[0]
                     c_pct = syscode_fulfillment(loc_alloc, tag, code)
 
+                    _, c3_can, c3_short_sqm = sqm_can_do(loc_alloc, tag, code)
+                    c3_dot = "🟢" if c_pct>=100 else "🟠" if c_pct>=90 else "🟡" if c_pct>=80 else "🔴"
                     st.markdown(
                         f'<div class="syscode-block">'
                         f'<div class="syscode-hdr">'
+                        f'<span style="font-size:.85rem;">{c3_dot}</span>'
                         f'<span class="code-badge">Code {code}</span>'
                         f'<span style="font-size:.8rem;color:var(--t1);">{sname}</span>'
                         f'<span style="font-family:\'JetBrains Mono\',monospace;'
-                        f'font-size:.72rem;color:var(--t3);">{sqm:,.2f} SQM</span>'
+                        f'font-size:.72rem;color:var(--t3);">'
+                        f'{c3_can:,.1f}/{sqm:,.1f} SQM</span>'
                         f'<span style="margin-left:auto;">{fulfil_pill(c_pct)}</span>'
                         f'</div></div>',
                         unsafe_allow_html=True)
                     plotly_mat_table(
                         code_alloc,
                         f"loc_{loc}_{tag}_{code}",
-                        height=65 + len(code_alloc)*30
+                        height=65 + len(code_alloc)*30,
+                        show_sqm=True, tag=tag, code=code
                     )
 
                 # Equipment grand total
@@ -1585,6 +2022,78 @@ with tab3:
             f'<div style="border-bottom:1px solid #1E2E46;margin:1rem 0;"></div>',
             unsafe_allow_html=True)
 
+
+    # ── Per-location Excel downloads ────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="sec-hdr">📥 Download Report per Location</div>',
+                unsafe_allow_html=True)
+
+    dl_loc_cols = st.columns(len(LOCATION_ORDER))
+    for _dl_col, _loc_dl in zip(dl_loc_cols, LOCATION_ORDER):
+        _loc_tags_dl = st.session_state.loc_order.get(
+            _loc_dl,
+            eq_master[eq_master["Location"] == _loc_dl]["Equipment_Tag_No."].tolist()
+        )
+        if not _loc_tags_dl:
+            continue
+        _loc_alloc_dl = cascade_allocate(_loc_tags_dl)
+        if _loc_alloc_dl.empty:
+            continue
+        # Enrich with inventory data for export
+        _inv_lu = inv[["Material_Code","Available_Qty","Ordered_Qty"]].groupby(
+            "Material_Code", as_index=False).first()
+        _loc_report = _loc_alloc_dl.merge(_inv_lu, on="Material_Code", how="left")
+        _loc_report["Available_Qty"] = _loc_report["Available_Qty"].fillna(0)
+        _loc_report["Ordered_Qty"]   = _loc_report["Ordered_Qty"].fillna(0)
+        _export_cols = [
+            "Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name",
+            "Total_SQM", "Material_Code", "Material_Name", "UOM",
+            "Demand_Qty", "Available_Qty", "Ordered_Qty",
+            "Allocated_Qty", "Shortfall_Qty", "Fulfillment_Pct",
+        ]
+        _export_df = _loc_report[[c for c in _export_cols if c in _loc_report.columns]]
+        _dl_col.download_button(
+            label=f"⬇ {_loc_dl}",
+            data=excel_bytes(_export_df),
+            file_name=f"location_report_{_loc_dl.replace(' ', '_')}.xlsx",
+            mime="application/vnd.ms-excel",
+            use_container_width=True,
+            key=f"dl_loc_{_loc_dl}",
+        )
+
+    # ── Print Report button ──────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="sec-hdr">🖨 Print Location Report</div>',
+                unsafe_allow_html=True)
+    st.markdown("""
+    <button onclick="window.print()"
+        style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
+               font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+               background:#F59E0B;color:#000;border:none;border-radius:4px;
+               padding:.52rem 1.3rem;cursor:pointer;transition:all .15s;">
+        🖨 Print / Save as PDF
+    </button>
+    <style>
+    @media print {
+        [data-testid="stSidebar"], [data-testid="stHeader"],
+        .sticky-header-wrap, [data-testid="stTabs"] > div:first-of-type,
+        button[onclick="window.print()"] { display:none!important; }
+        [data-testid="stExpander"] { break-inside:avoid; }
+        body { background:#fff!important; color:#000!important; }
+    }
+    </style>""", unsafe_allow_html=True)
+
+    # ── Smart Reordering Suggestions per location ───────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    for _loc_sugg in LOCATION_ORDER:
+        _loc_tags_sugg = st.session_state.loc_order.get(
+            _loc_sugg,
+            eq_master[eq_master["Location"]==_loc_sugg]["Equipment_Tag_No."].tolist()
+        )
+        if len(_loc_tags_sugg) < 2:
+            continue
+        with st.expander(f"💡 Smart Reordering Suggestions — {_loc_sugg}", expanded=False):
+            render_suggestion_panel(_loc_tags_sugg, f"tab3_{_loc_sugg}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 · EXECUTION PLAN
@@ -1791,3 +2300,231 @@ with tab4:
                     mime="application/vnd.ms-excel",
                     use_container_width=True,
                 )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 · TOTAL OVERVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.markdown('<div class="sec-hdr">📈 Total Overview — Project-Wide Material Summary</div>',
+                unsafe_allow_html=True)
+
+    # ── Project totals from all equipment ────────────────────────────────────
+    all_tags_ov = eq_master["Equipment_Tag_No."].tolist()
+
+    total_demand_ov = (
+        dm.groupby(["Material_Code","Material_Name","UOM"], as_index=False)
+        ["Demand_Qty"].sum()
+    )
+    total_demand_ov = total_demand_ov.merge(
+        inv[["Material_Code","Available_Qty"]], on="Material_Code", how="left"
+    )
+    total_demand_ov["Available_Qty"] = total_demand_ov["Available_Qty"].fillna(0)
+    total_demand_ov["Shortfall"]     = (
+        total_demand_ov["Demand_Qty"] - total_demand_ov["Available_Qty"]
+    ).clip(lower=0).round(3)
+    total_demand_ov["Coverage_%"]    = (
+        total_demand_ov["Available_Qty"].clip(upper=total_demand_ov["Demand_Qty"])
+        / total_demand_ov["Demand_Qty"].replace(0, np.nan) * 100
+    ).fillna(100).clip(0,100).round(1)
+
+    proj_avail_ov  = total_demand_ov["Available_Qty"].clip(
+        upper=total_demand_ov["Demand_Qty"]).sum()
+    proj_demand_ov = total_demand_ov["Demand_Qty"].sum()
+    proj_short_ov  = total_demand_ov["Shortfall"].sum()
+    proj_cov_ov    = (proj_avail_ov / proj_demand_ov * 100
+                      if proj_demand_ov > 0 else 100)
+
+    sqm_ref_ov      = equip_sc[["Equipment_Tag_No.","Lining_System_Code","Total_SQM"]].drop_duplicates()
+    proj_sqm_ov     = sqm_ref_ov["Total_SQM"].sum()
+    proj_can_sqm_ov = round(proj_sqm_ov * min(1.0, proj_cov_ov/100), 2)
+    proj_def_sqm_ov = round(proj_sqm_ov - proj_can_sqm_ov, 2)
+
+    # ── KPI strip ─────────────────────────────────────────────────────────────
+    k1,k2,k3,k4,k5,k6 = st.columns(6)
+    k1.metric("Total Equipment",  len(all_tags_ov))
+    k2.metric("Total SQM",        f"{proj_sqm_ov:,.1f}")
+    k3.metric("SQM Achievable",   f"{proj_can_sqm_ov:,.1f}  ({proj_cov_ov:.0f}%)")
+    k4.metric("SQM Deficit",      f"{proj_def_sqm_ov:,.1f}")
+    k5.metric("Materials",        len(total_demand_ov))
+    k6.metric("Overall Coverage", f"{proj_cov_ov:.1f}%", delta=f"{proj_cov_ov-100:.1f}%")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Available vs Ordered ──────────────────────────────────────────────────
+    st.markdown('<div class="sec-hdr">📦 Available vs On-Order Materials</div>',
+                unsafe_allow_html=True)
+
+    ordered_col_ov = next(
+        (c for c in inv.columns if c in ("Ordered_Qty","Balance To Be Received")),
+        None
+    )
+    inv_ov = inv.copy()
+    inv_ov["On_Order"]    = inv_ov[ordered_col_ov].fillna(0) if ordered_col_ov else 0.0
+    inv_ov["Total_Stock"] = inv_ov["Available_Qty"] + inv_ov["On_Order"]
+
+    io1,io2,io3 = st.columns(3)
+    io1.metric("Total Available",         f"{inv_ov['Available_Qty'].sum():,.0f} units")
+    io2.metric("Total On-Order",          f"{inv_ov['On_Order'].sum():,.0f} units")
+    io3.metric("Combined (Avail+Order)",  f"{inv_ov['Total_Stock'].sum():,.0f} units")
+
+    inv_ov_show = inv_ov[["Material_Code","Material_Name","UOM",
+                           "Available_Qty","On_Order","Total_Stock"]].copy()
+    inv_ov_show.columns = ["Code","Material Name","UOM","Available","On Order","Total (Avail+Order)"]
+
+    def _style_inv_ov(row):
+        if row["Available"] == 0 and row["On Order"] == 0:
+            bg = "rgba(239,68,68,.08)"
+        elif row["Available"] == 0:
+            bg = "rgba(249,115,22,.08)"
+        else:
+            bg = "rgba(16,185,129,.06)"
+        return [f"background-color:{bg}"] * len(row)
+
+    st.dataframe(
+        inv_ov_show.style.apply(_style_inv_ov, axis=1).format(
+            {"Available":"{:,.2f}","On Order":"{:,.2f}","Total (Avail+Order)":"{:,.2f}"}),
+        use_container_width=True, hide_index=True,
+        height=50 + len(inv_ov_show)*35, key="ov_inv_tbl")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── System Code feasibility ───────────────────────────────────────────────
+    st.markdown('<div class="sec-hdr">⚙️ System Code Feasibility — SQM & Material Qty</div>',
+                unsafe_allow_html=True)
+
+    all_codes_ov = sorted(dm["Lining_System_Code"].unique(), key=lambda x: int(x))
+    sc_rows_ov   = []
+    for code in all_codes_ov:
+        sc_dm = dm[dm["Lining_System_Code"] == code]
+        if sc_dm.empty: continue
+        sname   = sc_dm["Lining_System_Short_Name"].iloc[0]
+        n_equip = sc_dm["Equipment_Tag_No."].nunique()
+        sc_sqm  = sqm_ref_ov[sqm_ref_ov["Lining_System_Code"]==code]["Total_SQM"].sum()
+        sc_mat  = sc_dm.groupby("Material_Code",as_index=False)["Demand_Qty"].sum()
+        sc_mat  = sc_mat.merge(inv[["Material_Code","Available_Qty"]], on="Material_Code", how="left")
+        sc_mat["Available_Qty"] = sc_mat["Available_Qty"].fillna(0)
+        sc_d    = sc_mat["Demand_Qty"].sum()
+        sc_a    = sc_mat["Available_Qty"].clip(upper=sc_mat["Demand_Qty"]).sum()
+        sc_sh   = (sc_mat["Demand_Qty"]-sc_mat["Available_Qty"]).clip(lower=0).sum()
+        sc_cov  = (sc_a/sc_d*100) if sc_d>0 else 100
+        sc_can  = round(sc_sqm * min(1.0, sc_cov/100), 2)
+        sc_def  = round(sc_sqm - sc_can, 2)
+        sc_rows_ov.append({
+            "Code": f"Code {code}", "Short Name": sname, "Equipment": n_equip,
+            "Total SQM": round(sc_sqm,2), "SQM Can Do": sc_can, "SQM Deficit": sc_def,
+            "Coverage %": round(sc_cov,1), "Total Demand": round(sc_d,2),
+            "Available Qty": round(sc_a,2), "Shortfall Qty": round(sc_sh,2),
+        })
+
+    if sc_rows_ov:
+        sc_df_ov = pd.DataFrame(sc_rows_ov).sort_values("Coverage %")
+        bar_c_ov = ["#10B981" if c>=100 else "#F97316" if c>=90
+                    else "#EAB308" if c>=80 else "#EF4444" for c in sc_df_ov["Coverage %"]]
+        fig_ov = go.Figure(go.Bar(
+            y=sc_df_ov["Code"]+"  "+sc_df_ov["Short Name"],
+            x=sc_df_ov["Coverage %"], orientation="h",
+            marker_color=bar_c_ov, marker_opacity=.8,
+            text=[f"{r['Coverage %']:.0f}%  ·  {r['SQM Can Do']:,.0f}/{r['Total SQM']:,.0f} SQM"
+                  f"  ·  Short: {r['Shortfall Qty']:,.0f} units"
+                  for _,r in sc_df_ov.iterrows()],
+            textposition="inside",
+            textfont=dict(family="JetBrains Mono",size=9,color="#fff"),
+        ))
+        fig_ov.add_vline(x=100,line_color="rgba(128,128,128,.2)",line_dash="dot",line_width=1)
+        fig_ov.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0,r=20,t=5,b=0),height=max(260,len(sc_df_ov)*44),
+            xaxis=dict(range=[0,120],gridcolor="rgba(128,128,128,.1)",
+                       tickfont=dict(family="JetBrains Mono",size=9)),
+            yaxis=dict(gridcolor="rgba(128,128,128,.1)",
+                       tickfont=dict(family="JetBrains Mono",size=9)),
+            font=dict(family="JetBrains Mono",size=10,color="rgba(148,163,184,.8)"),
+        )
+        st.plotly_chart(fig_ov, use_container_width=True, key="ov_sc_chart")
+
+        def _style_sc_ov(row):
+            pct = row["Coverage %"]
+            if pct>=100:  bg,tc="rgba(16,185,129,.1)","#10B981"
+            elif pct>=90: bg,tc="rgba(249,115,22,.1)","#F97316"
+            elif pct>=80: bg,tc="rgba(234,179,8,.1)", "#EAB308"
+            else:         bg,tc="rgba(239,68,68,.1)", "#EF4444"
+            styles=[f"background-color:{bg}"]*len(row)
+            ci=list(row.index).index("Coverage %")
+            styles[ci]=f"background-color:{bg};color:{tc};font-weight:700"
+            return styles
+
+        st.dataframe(
+            sc_df_ov.style.apply(_style_sc_ov,axis=1).format({
+                "Total SQM":"{:,.2f}","SQM Can Do":"{:,.2f}","SQM Deficit":"{:,.2f}",
+                "Coverage %":"{:.1f}%","Total Demand":"{:,.2f}",
+                "Available Qty":"{:,.2f}","Shortfall Qty":"{:,.2f}"}),
+            use_container_width=True, hide_index=True,
+            height=50+len(sc_df_ov)*35, key="ov_sc_tbl")
+
+        st.download_button("⬇ Download System Code Summary",
+            data=excel_bytes(sc_df_ov.reset_index(drop=True)),
+            file_name="total_overview_syscode.xlsx",
+            mime="application/vnd.ms-excel")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Per-system-code material detail ──────────────────────────────────────
+    st.markdown('<div class="sec-hdr">🔬 Material Detail by System Code</div>',
+                unsafe_allow_html=True)
+
+    for code in all_codes_ov:
+        sc_dm = dm[dm["Lining_System_Code"]==code]
+        if sc_dm.empty: continue
+        sname  = sc_dm["Lining_System_Short_Name"].iloc[0]
+        sc_sqm = sqm_ref_ov[sqm_ref_ov["Lining_System_Code"]==code]["Total_SQM"].sum()
+        sc_mat = sc_dm.groupby(["Material_Code","Material_Name","UOM"],
+                                as_index=False)["Demand_Qty"].sum()
+        sc_mat = sc_mat.merge(inv[["Material_Code","Available_Qty"]], on="Material_Code", how="left")
+        sc_mat["Available_Qty"] = sc_mat["Available_Qty"].fillna(0)
+        sc_mat["Shortfall"]     = (sc_mat["Demand_Qty"]-sc_mat["Available_Qty"]).clip(lower=0).round(3)
+        sc_mat["Coverage_%"]    = (
+            sc_mat["Available_Qty"].clip(upper=sc_mat["Demand_Qty"])
+            / sc_mat["Demand_Qty"].replace(0,np.nan)*100
+        ).fillna(100).clip(0,100).round(1)
+        sc_mat["SQM_Can"]     = (sc_mat["Coverage_%"]/100 * sc_sqm).round(2)
+        sc_mat["SQM_Deficit"] = (sc_sqm - sc_mat["SQM_Can"]).round(2)
+        sc_d  = sc_mat["Demand_Qty"].sum()
+        sc_a  = sc_mat["Available_Qty"].clip(upper=sc_mat["Demand_Qty"]).sum()
+        sc_c  = (sc_a/sc_d*100) if sc_d>0 else 100
+        sc_can= sc_sqm * min(1.0, sc_c/100)
+        dot   = "🟢" if sc_c>=100 else "🟠" if sc_c>=90 else "🟡" if sc_c>=80 else "🔴"
+
+        with st.expander(
+            f"{dot}  Code {code}  ·  {sname}  ·  {sc_can:,.1f}/{sc_sqm:,.1f} SQM  ·  {sc_c:.1f}%",
+            expanded=False,
+        ):
+            m1,m2,m3,m4 = st.columns(4)
+            m1.metric("System Code",f"Code {code}")
+            m2.metric("Short Name", sname)
+            m3.metric("Total SQM",  f"{sc_sqm:,.2f}")
+            m4.metric("SQM Can Do", f"{sc_can:,.2f}  ({sc_c:.1f}%)")
+
+            mat_show = sc_mat[["Material_Code","Material_Name","UOM",
+                                "Available_Qty","Demand_Qty","Shortfall",
+                                "Coverage_%","SQM_Can","SQM_Deficit"]].copy()
+            mat_show.columns = ["Code","Material Name","UOM","Available",
+                                 "Total Demand","Shortfall","Coverage %",
+                                 "SQM Can Do","SQM Deficit"]
+
+            def _style_det_ov(row):
+                pct=row["Coverage %"]
+                if pct>=100:  bg,tc="rgba(16,185,129,.1)","#10B981"
+                elif pct>=90: bg,tc="rgba(249,115,22,.1)","#F97316"
+                elif pct>=80: bg,tc="rgba(234,179,8,.1)", "#EAB308"
+                else:         bg,tc="rgba(239,68,68,.1)", "#EF4444"
+                styles=[f"background-color:{bg}"]*len(row)
+                ci=list(row.index).index("Coverage %")
+                styles[ci]=f"background-color:{bg};color:{tc};font-weight:700"
+                return styles
+
+            st.dataframe(
+                mat_show.style.apply(_style_det_ov,axis=1).format({
+                    "Available":"{:,.3f}","Total Demand":"{:,.3f}","Shortfall":"{:,.3f}",
+                    "Coverage %":"{:.1f}%","SQM Can Do":"{:,.2f}","SQM Deficit":"{:,.2f}"}),
+                use_container_width=True, hide_index=True,
+                height=65+len(mat_show)*35, key=f"ov_det_{code}")

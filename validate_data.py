@@ -43,7 +43,12 @@ def clean_inventory(df_a: pd.DataFrame) -> pd.DataFrame:
     df = df_a.copy()
 
     # Keep only the columns needed downstream
+    # Keep Ordered_Qty if present — load_all will aggregate it
     keep = ["Material_Code", "Material_Name", "Nature", "UOM", "Available_Qty"]
+    for col_candidate in ["Ordered_Qty", "Balance To Be Received"]:
+        if col_candidate in df.columns:
+            keep.append(col_candidate)
+            break
     df = df[keep].copy()
 
     # Strip whitespace from string columns
