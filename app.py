@@ -836,7 +836,7 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab0, tab1, tab2, tab3, tab4, tab_consume, tab5 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab_consume, tab5, tab_master = st.tabs([
     "📊  Dashboard",
     "🔍  Equipment Entry",
     "📦  Session Order Report",
@@ -844,6 +844,7 @@ tab0, tab1, tab2, tab3, tab4, tab_consume, tab5 = st.tabs([
     "⚙️  Execution Plan",
     "📝  Daily Consumption",
     "📈  Total Overview",
+    "🗄️  Master Data",
 ])
 
 
@@ -3072,3 +3073,217 @@ with tab5:
                 file_name=f"consumption_log_full_{date.today()}.xlsx",
                 mime="application/vnd.ms-excel",
                 use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB: MASTER DATA — ADD EQUIPMENT
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_master:
+    st.markdown('<div class="sec-hdr">🗄️ Master Data — Add New Equipment</div>',
+                unsafe_allow_html=True)
+
+    if not db_available():
+        st.error("Database not found. Run `python setup_db.py` first.")
+        st.stop()
+
+    # ── Auto-generate next serial number ──────────────────────────────────────
+    _conn_sl = get_db()
+    next_sl = _conn_sl.execute(
+        "SELECT COALESCE(MAX(id), 0) + 1 FROM equipment"
+    ).fetchone()[0]
+    _conn_sl.close()
+
+    st.markdown(
+        f'<div class="card card-amber" style="display:inline-block;'
+        f'padding:.55rem 1.1rem;margin-bottom:.9rem;">'
+        f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.62rem;'
+        f'letter-spacing:.12em;text-transform:uppercase;color:var(--t4);">Next Sl. #</span>'
+        f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:1.3rem;'
+        f'font-weight:700;color:var(--amber);margin-left:.7rem;">{next_sl}</span>'
+        f'</div>',
+        unsafe_allow_html=True)
+
+    # ── Input form ─────────────────────────────────────────────────────────────
+    with st.form(key="add_equipment_form", clear_on_submit=True):
+
+        # Row 1: Location · Type · Equipment Tag · Name
+        st.markdown('<div class="sec-hdr">Equipment Identity</div>',
+                    unsafe_allow_html=True)
+        r1a, r1b, r1c, r1d = st.columns(4)
+        with r1a:
+            me_loc  = st.selectbox("📍 Location *", options=LOCATION_ORDER,
+                                   key="me_loc")
+        with r1b:
+            me_type = st.text_input("🏷️ Type", placeholder="e.g. VESSEL",
+                                    key="me_type")
+        with r1c:
+            me_tag  = st.text_input("🔩 Equipment Tag No. *",
+                                    placeholder="e.g. V-1001",
+                                    key="me_tag")
+        with r1d:
+            me_name = st.text_input("📛 Name",
+                                    placeholder="e.g. Feed Surge Drum",
+                                    key="me_name")
+
+        # Row 2: Description · Design · Material Spec · Lining Type
+        st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">Equipment Details</div>',
+                    unsafe_allow_html=True)
+        r2a, r2b, r2c, r2d = st.columns(4)
+        with r2a:
+            me_desc = st.text_input("📝 Description",
+                                    placeholder="e.g. Horizontal Drum",
+                                    key="me_desc")
+        with r2b:
+            me_design = st.text_input("📐 Design",
+                                      placeholder="e.g. Monolithic",
+                                      key="me_design")
+        with r2c:
+            me_matspec = st.text_input("🧱 Material Spec.",
+                                       placeholder="e.g. CASTABLE HI-AL",
+                                       key="me_matspec")
+        with r2d:
+            me_lintype = st.text_input("🔧 Lining Type",
+                                       placeholder="e.g. REFRACTORY",
+                                       key="me_lintype")
+
+        # Row 3: Lining System+ (full width)
+        st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">Lining System</div>',
+                    unsafe_allow_html=True)
+        me_linsys = st.text_area("🔗 Lining System+",
+                                  placeholder="e.g. SYSTEM 3 - MONOLITHIC CASTABLE",
+                                  height=70, key="me_linsys")
+
+        # Row 4: Lining System Code · Short Name · Lining Area · Surface Area
+        r4a, r4b, r4c, r4d = st.columns(4)
+        with r4a:
+            me_code  = st.text_input("⚙️ Lining System Code *",
+                                     placeholder="e.g. 3  (numeric)",
+                                     key="me_code")
+        with r4b:
+            me_sname = st.text_input("🏷️ System Short Name",
+                                     placeholder="e.g. MONOLITHIC",
+                                     key="me_sname")
+        with r4c:
+            me_linarea = st.number_input("📐 Lining Area (m²)", min_value=0.0,
+                                         value=0.0, step=0.1, format="%.2f",
+                                         key="me_linarea")
+        with r4d:
+            me_sqm = st.number_input("📏 Surface Area SQM *", min_value=0.0,
+                                     value=0.0, step=0.1, format="%.2f",
+                                     key="me_sqm",
+                                     help="Used directly for material demand calculation")
+
+        # Row 5: Dia/L · Ht/W · Remarks
+        st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">Dimensions & Notes</div>',
+                    unsafe_allow_html=True)
+        r5a, r5b, r5c, r5d = st.columns(4)
+        with r5a:
+            me_dial = st.text_input("📏 Dia / L", placeholder="e.g. 2.4 m",
+                                    key="me_dial")
+        with r5b:
+            me_htw  = st.text_input("📐 Ht. / W", placeholder="e.g. 3.6 m",
+                                    key="me_htw")
+        with r5c:
+            me_remarks = st.text_input("💬 Remarks",
+                                       placeholder="Optional notes",
+                                       key="me_remarks")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        me_submit = st.form_submit_button("💾 Save New Equipment",
+                                          use_container_width=False)
+
+    # ── Validation & DB write ──────────────────────────────────────────────────
+    if me_submit:
+        eq_tag_val     = me_tag.strip()
+        lining_code_val = me_code.strip()
+        sqm_val        = float(me_sqm)
+
+        if not eq_tag_val:
+            st.error("⚠️ Equipment Tag No. is required.")
+        elif not lining_code_val:
+            st.error("⚠️ Lining System Code is required.")
+        elif sqm_val <= 0:
+            st.error("⚠️ Surface Area SQM must be greater than 0.")
+        else:
+            try:
+                conn = get_db()
+                cur  = conn.cursor()
+
+                # INSERT into equipment
+                cur.execute("""
+                    INSERT INTO equipment (
+                        location, type, lining_system_code, lining_system_short_name,
+                        lining_type, equipment_tag, name, description,
+                        material_spec, design, surface_area_sqm, lining_systems,
+                        lining_area, dia_l, ht_w, remarks
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    me_loc, me_type.strip(), lining_code_val, me_sname.strip(),
+                    me_lintype.strip(), eq_tag_val, me_name.strip(), me_desc.strip(),
+                    me_matspec.strip(), me_design.strip(), sqm_val, me_linsys.strip(),
+                    float(me_linarea) if me_linarea else None,
+                    me_dial.strip() or None, me_htw.strip() or None,
+                    me_remarks.strip() or None,
+                ))
+
+                # CRITICAL: keep sqm_progress in sync so Daily Consumption tab works
+                cur.execute("""
+                    INSERT INTO sqm_progress (equipment_tag, lining_system_code,
+                                              original_sqm, done_sqm)
+                    VALUES (?, ?, ?, 0)
+                    ON CONFLICT(equipment_tag, lining_system_code)
+                    DO UPDATE SET original_sqm = excluded.original_sqm
+                """, (eq_tag_val, lining_code_val, sqm_val))
+
+                conn.commit()
+                conn.close()
+                st.cache_data.clear()
+                st.success(
+                    f"✅ Equipment **{eq_tag_val}** (Code {lining_code_val} · "
+                    f"{me_sname.strip() or 'N/A'}) saved as Sl. # {next_sl}. "
+                    f"SQM: {sqm_val:,.2f} m²"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Database error: {e}")
+
+    # ── View existing equipment ────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("📋 View Existing Equipment Database", expanded=False):
+        conn = get_db()
+        eq_view = pd.read_sql("""
+            SELECT
+                id                       AS "Sl.#",
+                equipment_tag            AS "Tag No.",
+                name                     AS "Name",
+                location                 AS "Location",
+                type                     AS "Type",
+                lining_system_code       AS "Code",
+                lining_system_short_name AS "System Name",
+                lining_type              AS "Lining Type",
+                material_spec            AS "Material Spec.",
+                design                   AS "Design",
+                surface_area_sqm         AS "SQM",
+                lining_area              AS "Lining Area",
+                dia_l                    AS "Dia/L",
+                ht_w                     AS "Ht/W",
+                lining_systems           AS "Lining System+",
+                remarks                  AS "Remarks"
+            FROM equipment
+            ORDER BY id
+        """, conn)
+        conn.close()
+
+        st.dataframe(eq_view, use_container_width=True, hide_index=True,
+                     height=min(600, 50 + len(eq_view) * 35),
+                     key="master_eq_tbl")
+        st.caption(f"{len(eq_view)} row(s) in equipment table.")
+
+        st.download_button(
+            "⬇ Download Equipment Table",
+            data=excel_bytes(eq_view,
+                             report_title="Equipment Master — Smart Material Estimator"),
+            file_name=f"equipment_master_{date.today()}.xlsx",
+            mime="application/vnd.ms-excel",
+            key="dl_eq_master"
+        )

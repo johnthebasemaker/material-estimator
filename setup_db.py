@@ -64,7 +64,11 @@ CREATE TABLE IF NOT EXISTS equipment (
     material_spec            TEXT,
     design                   TEXT,
     surface_area_sqm         REAL,
-    lining_systems           TEXT
+    lining_systems           TEXT,
+    lining_area              REAL,
+    dia_l                    TEXT,
+    ht_w                     TEXT,
+    remarks                  TEXT
 );
 
 -- ── Live: SQM progress (tracks completed SQM per tag+code) ─────────────────
@@ -116,6 +120,23 @@ def connect():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _migrate_equipment_columns(conn):
+    """Add new columns to equipment table if they don't exist (safe for existing DBs)."""
+    cur = conn.cursor()
+    existing = {row[1] for row in cur.execute("PRAGMA table_info(equipment)").fetchall()}
+    new_cols = {"lining_area": "REAL", "dia_l": "TEXT", "ht_w": "TEXT", "remarks": "TEXT"}
+    added = []
+    for col, dtype in new_cols.items():
+        if col not in existing:
+            cur.execute(f"ALTER TABLE equipment ADD COLUMN {col} {dtype}")
+            added.append(col)
+    conn.commit()
+    if added:
+        print(f"  ✅ Migrated new equipment columns: {', '.join(added)}")
+    else:
+        print("  ✅ Equipment columns already up to date.")
 
 
 def load_clean_excel():
@@ -227,13 +248,14 @@ def seed_database(conn, inv, recipe, equip):
                                    lining_system_short_name, lining_type,
                                    equipment_tag, name, description,
                                    material_spec, design, surface_area_sqm,
-                                   lining_systems)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                                   lining_systems, lining_area, dia_l, ht_w, remarks)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (r["Location"], r["Type"], r["Lining_System_Code"],
               r.get("Lining_System_Short_Name",""), r.get("Lining_Type",""),
               r["Equipment_Tag_No."], r.get("Name",""), r.get("Description",""),
               r.get("Material Spec.",""), r.get("Design",""),
-              r.get("Surface_Area_SQM", 0), r.get("Lining_System+","")))
+              r.get("Surface_Area_SQM", 0), r.get("Lining_System+",""),
+              None, None, None, None))
 
     # ── Seed sqm_progress (insert only new rows, preserve existing done_sqm) ─
     equip_sc = equip.groupby(
@@ -270,6 +292,9 @@ def main():
     conn = connect()
     conn.executescript(SCHEMA)
     conn.commit()
+
+    print("  Migrating equipment columns…")
+    _migrate_equipment_columns(conn)
 
     print("  Seeding master data…")
     seed_database(conn, inv, recipe, equip)
