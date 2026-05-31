@@ -66,7 +66,8 @@ html,body,[class*="css"]{font-family:'Sora',sans-serif!important;background:var(
 [data-testid="stSidebar"] *{font-family:'Sora',sans-serif!important;}
 
 /* ── TRUE STICKY HEADER & TABS ── */
-header[data-testid="stHeader"]{display:none!important;}
+header[data-testid="stHeader"]{height:0!important;min-height:0!important;padding:0!important;background:transparent!important;overflow:visible!important;}
+[data-testid="collapsedControl"]{display:flex!important;visibility:visible!important;opacity:1!important;position:fixed!important;top:.45rem!important;left:.5rem!important;z-index:10001!important;}
 [data-testid="stAppViewContainer"]{padding-top:0!important;}
 
 /* 1. Freeze the main title block */
@@ -118,6 +119,7 @@ header[data-testid="stHeader"]{display:none!important;}
 
 /* dataframe */
 [data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:6px;overflow:hidden;}
+[data-testid="stDataFrame"] [role="columnheader"],[data-testid="stDataFrame"] th,[data-testid="stDataFrame"] .dvn-column-header,[data-testid="stDataFrame"] .dvn-header-row [role="cell"]{font-weight:700!important;color:var(--text-color)!important;}
 hr{border-color:var(--border)!important;margin:.8rem 0!important;}
 
 /* ── Custom components ── */
@@ -223,7 +225,7 @@ def load_all():
             "lining_system_code AS Lining_System_Code, "
             "lining_system_short_name AS Lining_System_Short_Name, "
             "lining_type AS Lining_Type, equipment_tag AS \"Equipment_Tag_No.\", "
-            "name AS Name, description AS Description, "
+            "name AS Name, substrate AS Substrate, "
             "material_spec AS \"Material Spec.\", design AS Design, "
             "surface_area_sqm AS Surface_Area_SQM, lining_systems AS \"Lining_System+\" "
             "FROM equipment", conn)
@@ -281,7 +283,7 @@ def load_all():
         raw["Type"]               = raw["Type"].astype(str).str.strip()
         raw["Surface_Area_SQM"]   = pd.to_numeric(raw["Surface_Area_SQM"],errors="coerce")
         raw["Lining_System_Code"] = raw["Lining_System_Code"].astype(float).astype(int).astype(str)
-        for col in ["Name","Description","Lining_System_Short_Name"]:
+        for col in ["Name","Substrate","Lining_System_Short_Name"]:
             if col in raw.columns:
                 raw[col] = raw[col].astype(str).str.strip()
         equip_raw = raw
@@ -306,7 +308,7 @@ def load_all():
     # ── Equipment master ─────────────────────────────────────────────────
     eq_master = equip_raw.groupby("Equipment_Tag_No.", as_index=False).agg(
         Name          =("Name",          "first"),
-        Description   =("Description",   "first"),
+        Substrate     =("Substrate",      "first"),
         Location      =("Location",      "first"),
         Type          =("Type",          "first"),
         Lining_Systems=("Lining_System+","first"),
@@ -677,7 +679,7 @@ def _eq_label(tag: str) -> str:
     if row.empty: return tag
     r = row.iloc[0]
     type_s = str(r.get("Type","") or "").strip()
-    desc_s = str(r.get("Description","") or "").strip()
+    desc_s = str(r.get("Substrate","") or "").strip()
     name_s = str(r.get("Name","") or "").strip()
     parts  = [name_s]
     if type_s and type_s not in ("nan","—"): parts.append(type_s)
@@ -881,15 +883,15 @@ with tab0:
                                         default=code_opts_d, key="dash_code")
         sel_codes = [c.split(" – ")[0].replace("Code ","").strip() for c in sel_codes_raw]
     with df4:
-        all_desc_d = sorted(eq_master["Description"].dropna().unique().tolist())
-        sel_desc = st.multiselect("📋 Description", options=all_desc_d,
-                                   default=all_desc_d, key="dash_desc")
+        all_desc_d = sorted(eq_master["Substrate"].dropna().unique().tolist())
+        sel_substrate = st.multiselect("📋 Substrate", options=all_desc_d,
+                                        default=all_desc_d, key="dash_substrate")
 
     # ── Apply filters ─────────────────────────────────────────────────────────
     filtered_eq = eq_master[
         eq_master["Location"].isin(sel_locations) &
         eq_master["Type"].str.strip().isin(sel_types) &
-        eq_master["Description"].isin(sel_desc)
+        eq_master["Substrate"].isin(sel_substrate)
     ]
     if sel_codes:
         tags_w_code = dm[dm["Lining_System_Code"].isin(sel_codes)]["Equipment_Tag_No."].unique()
@@ -944,8 +946,8 @@ with tab0:
                   help="Equipment tags matching current filter selection.")
         k2.metric("Total SQM", f"{proj_sqm:,.1f}",
                   help="Remaining surface area (m²) after deducting daily consumption entries.")
-        k3.metric("SQM Achievable", f"{can_sqm:,.1f}  ({f_cov:.0f}%)",
-                  help="SQM completable with current Available Qty = Total SQM × Coverage %.")
+        k3.metric("Available Material Coverage", f"{can_sqm:,.1f}  ({f_cov:.0f}%)",
+                  help="SQM coverable with currently available material = Total SQM × Coverage %.")
         k4.metric("SQM Deficit", f"{short_sqm:,.1f}",
                   help="SQM we cannot complete due to material shortfalls = Total − Achievable.")
         k5.metric("Overall Coverage", f"{f_cov:.1f}%", delta=f"{f_cov-100:.1f}%",
@@ -980,7 +982,7 @@ with tab0:
                         {"range":[90,100],"color":"rgba(16,185,129,.08)"},
                     ],
                 },
-                title={"text":f"Coverage  ·  {can_sqm:,.0f} / {proj_sqm:,.0f} SQM achievable",
+                title={"text":f"Coverage  ·  {can_sqm:,.0f} / {proj_sqm:,.0f} SQM Available Material Coverage",
                        "font":{"family":"JetBrains Mono","size":9,"color":"rgba(148,163,184,.7)"}},
             ))
             fig_g.update_layout(paper_bgcolor="rgba(0,0,0,0)",
@@ -1129,10 +1131,10 @@ with tab0:
                 st.plotly_chart(fig_sc, use_container_width=True, key="dash_sc_bar")
 
                 sc_show = sc_df.copy()
-                sc_show.columns = ["Code","Short Name","SQM Total","SQM Can Do",
+                sc_show.columns = ["Code","Short Name","SQM Total","Available Material Coverage",
                                    "SQM Deficit","Coverage %"]
-                sc_show[["SQM Total","SQM Can Do","SQM Deficit"]] = (
-                    sc_show[["SQM Total","SQM Can Do","SQM Deficit"]].round(1))
+                sc_show[["SQM Total","Available Material Coverage","SQM Deficit"]] = (
+                    sc_show[["SQM Total","Available Material Coverage","SQM Deficit"]].round(1))
                 st.dataframe(sc_show,use_container_width=True,hide_index=True,
                              key="dash_sc_tbl")
 
@@ -1233,7 +1235,7 @@ with tab0:
         p1,p2,p3,p4,p5,p6 = st.columns(6)
         p1.metric("Equipment",        len(filtered_tags))
         p2.metric("Total SQM",        f"{proj_sqm:,.1f}")
-        p3.metric("SQM Achievable",   f"{can_sqm:,.1f}  ({f_cov:.0f}%)")
+        p3.metric("Available Material Coverage", f"{can_sqm:,.1f}  ({f_cov:.0f}%)")
         p4.metric("SQM Deficit",      f"{short_sqm:,.1f}")
         p5.metric("Shortfall Units",  f"{f_total_short:,.0f}")
         p6.metric("After Orders (Net)",f"{f_total_net:,.0f}")
@@ -1317,7 +1319,7 @@ with tab0:
                     pc1.metric("System Code", f"Code {code}")
                     pc2.metric("Short Name",  sname)
                     pc3.metric("SQM Total",   f"{code_sqm:,.2f}")
-                    pc4.metric("SQM Achievable", f"{c_can_sqm:,.2f}")
+                    pc4.metric("Available Material Coverage", f"{c_can_sqm:,.2f}")
                     pc5.metric("SQM Deficit",    f"{c_sh_sqm:,.2f}")
 
                     # Table with Available, On Order, Demand, Shortfall, Net Shortfall
@@ -1583,8 +1585,8 @@ with tab1:
                 f'gap:.4rem .7rem;font-size:.78rem;">'
                 f'<div><span style="color:var(--t4);">Type</span><br>'
                 f'<span style="color:var(--t1);">{row["Type"]}</span></div>'
-                f'<div><span style="color:var(--t4);">Description</span><br>'
-                f'<span style="color:var(--t1);">{row["Description"] or "—"}</span></div>'
+                f'<div><span style="color:var(--t4);">Substrate</span><br>'
+                f'<span style="color:var(--t1);">{row["Substrate"] or "—"}</span></div>'
                 f'<div><span style="color:var(--t4);">Material Spec.</span><br>'
                 f'<span style="color:var(--t1);">{row["Material_Spec"] or "—"}</span></div>'
                 f'<div style="grid-column:1/-1;">'
@@ -1756,7 +1758,7 @@ with tab2:
             t_can_sqm  = round(t_sqm * min(1.0, t_pct/100), 2)
             t_dot_char = "🟢" if t_pct>=100 else "🟠" if t_pct>=90 else "🟡" if t_pct>=80 else "🔴"
             _t2_type = str(eq_row.get("Type","") or "").strip()
-            _t2_desc = str(eq_row.get("Description","") or "").strip()[:20]
+            _t2_desc = str(eq_row.get("Substrate","") or "").strip()[:20]
             _t2_meta = "  |  ".join(p for p in [_t2_type,_t2_desc] if p and p not in ("nan","—"))
             with st.expander(
                 f"{t_dot_char}  #{i+1}  {tag}  ·  {name}  ·  {_t2_meta}  ·  {loc}  "
@@ -1766,7 +1768,7 @@ with tab2:
                 # Equipment meta strip
                 m1,m2,m3,m4 = st.columns(4)
                 m1.markdown(f'**Type:** {eq_row["Type"]}')
-                m2.markdown(f'**Description:** {eq_row["Description"] or "—"}')
+                m2.markdown(f'**Substrate:** {eq_row["Substrate"] or "—"}')
                 m3.markdown(f'**Material Spec.:** {eq_row["Material_Spec"] or "—"}')
                 m4.markdown(f'**Total SQM:** `{eq_row["Total_SQM"]:,.2f}`')
                 st.caption(f'**Lining Systems:** '
@@ -2063,7 +2065,7 @@ with tab3:
             _t3_sqm    = sqm_ref[sqm_ref["Equipment_Tag_No."]==tag]["Total_SQM"].sum()
             _t3_cansqm = round(_t3_sqm * min(1.0, t_pct/100), 2)
             _t3_type   = str(eq_row.get("Type","") or "").strip()
-            _t3_desc   = str(eq_row.get("Description","") or "").strip()[:20]
+            _t3_desc   = str(eq_row.get("Substrate","") or "").strip()[:20]
             _t3_meta   = "  |  ".join(p for p in [_t3_type,_t3_desc] if p and p not in ("nan","—"))
             with st.expander(
                 f"{_dot_char}  {tag}  ·  {eq_row['Name']}  ·  {_t3_meta}  ·  "
@@ -2072,7 +2074,7 @@ with tab3:
             ):
                 c1,c2,c3 = st.columns(3)
                 c1.markdown(f'**Type:** {eq_row["Type"]}')
-                c2.markdown(f'**Description:** {eq_row["Description"] or "—"}')
+                c2.markdown(f'**Substrate:** {eq_row["Substrate"] or "—"}')
                 c3.markdown(f'**Material Spec.:** {eq_row["Material_Spec"] or "—"}')
                 st.caption(
                     f'**Lining:** {str(eq_row["Lining_Systems"]).replace(chr(10)," | ")}')
@@ -2866,7 +2868,7 @@ with tab5:
     })
     # Merge equipment master (with all columns from Data Input sheet)
     master = master.merge(
-        eq_master[["Equipment_Tag_No.","Name","Description","Location","Type",
+        eq_master[["Equipment_Tag_No.","Name","Substrate","Location","Type",
                    "Lining_Systems","Lining_Type","Material_Spec","Design"]],
         on="Equipment_Tag_No.", how="left")
 
@@ -2889,14 +2891,14 @@ with tab5:
     master.insert(0, "S.No", master.index + 1)
 
     display_master = master[[
-        "S.No","Equipment_Tag_No.","Name","Description","Type","Location",
+        "S.No","Equipment_Tag_No.","Name","Substrate","Type","Location",
         "Lining_Systems","Lining_System_Code","Lining_System_Short_Name",
         "Lining_Type","Material_Spec","Design",
         "Total_SQM","Lining_Area_SQM","Done_SQM","Remaining_SQM",
         "Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_%"
     ]].copy()
     display_master.columns = [
-        "S.No","Equipment No","Name","Description","Type","Location",
+        "S.No","Equipment No","Name","Substrate","Type","Location",
         "Lining System+","System Code","System Name",
         "Lining Type","Material Spec.","Design",
         "Total SQM","Lining Area SQM","Done SQM","Remaining SQM",
@@ -3024,8 +3026,8 @@ with tab5:
             m3.metric("Total SQM",   f"{sc_sqm:,.2f}")
             m4.metric("Done SQM",    f"{done_sq:,.2f}",
                       help="SQM completed via Daily Consumption entries.")
-            m5.metric("SQM Can Do",  f"{sc_can:,.2f}  ({sc_cov_avg:.1f}%)",
-                      help="Achievable SQM with current inventory balance.")
+            m5.metric("Available Material Coverage", f"{sc_can:,.2f}  ({sc_cov_avg:.1f}%)",
+                      help="SQM coverable with current available material balance.")
 
             mat_show = sc_mat[["Material_Code","Material_Name","UOM",
                                 "Available_Qty","Demand_Qty","Shortfall",
@@ -3078,212 +3080,381 @@ with tab5:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB: MASTER DATA — ADD EQUIPMENT
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB: MASTER DATA — FULL TABLE MANAGEMENT
+# ─────────────────────────────────────────────────────────────────────────────
 with tab_master:
-    st.markdown('<div class="sec-hdr">🗄️ Master Data — Add New Equipment</div>',
+    st.markdown('<div class="sec-hdr">🗄️ Master Data — View, Add & Delete Records</div>',
                 unsafe_allow_html=True)
 
     if not db_available():
         st.error("Database not found. Run `python setup_db.py` first.")
         st.stop()
 
-    # ── Auto-generate next serial number ──────────────────────────────────────
-    _conn_sl = get_db()
-    next_sl = _conn_sl.execute(
-        "SELECT COALESCE(MAX(id), 0) + 1 FROM equipment"
-    ).fetchone()[0]
-    _conn_sl.close()
+    # ── Radio selector ─────────────────────────────────────────────────────────
+    md_table_sel = st.radio(
+        "Select Table to Manage",
+        options=[
+            "Equipment",
+            "LINING SYSTEM MATERIAL CONSM",
+            "Materials_DetailsAvailable_Qty",
+        ],
+        key="md_table_radio",
+        horizontal=True,
+    )
+    TABLE_MAP = {
+        "Equipment":                      "equipment",
+        "LINING SYSTEM MATERIAL CONSM":   "recipe",
+        "Materials_DetailsAvailable_Qty":  "inventory",
+    }
+    db_table = TABLE_MAP[md_table_sel]
+    st.markdown("<hr>", unsafe_allow_html=True)
 
-    st.markdown(
-        f'<div class="card card-amber" style="display:inline-block;'
-        f'padding:.55rem 1.1rem;margin-bottom:.9rem;">'
-        f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.62rem;'
-        f'letter-spacing:.12em;text-transform:uppercase;color:var(--t4);">Next Sl. #</span>'
-        f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:1.3rem;'
-        f'font-weight:700;color:var(--amber);margin-left:.7rem;">{next_sl}</span>'
-        f'</div>',
-        unsafe_allow_html=True)
-
-    # ── Input form ─────────────────────────────────────────────────────────────
-    with st.form(key="add_equipment_form", clear_on_submit=True):
-
-        # Row 1: Location · Type · Equipment Tag · Name
-        st.markdown('<div class="sec-hdr">Equipment Identity</div>',
-                    unsafe_allow_html=True)
-        r1a, r1b, r1c, r1d = st.columns(4)
-        with r1a:
-            me_loc  = st.selectbox("📍 Location *", options=LOCATION_ORDER,
-                                   key="me_loc")
-        with r1b:
-            me_type = st.text_input("🏷️ Type", placeholder="e.g. VESSEL",
-                                    key="me_type")
-        with r1c:
-            me_tag  = st.text_input("🔩 Equipment Tag No. *",
-                                    placeholder="e.g. V-1001",
-                                    key="me_tag")
-        with r1d:
-            me_name = st.text_input("📛 Name",
-                                    placeholder="e.g. Feed Surge Drum",
-                                    key="me_name")
-
-        # Row 2: Description · Design · Material Spec · Lining Type
-        st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">Equipment Details</div>',
-                    unsafe_allow_html=True)
-        r2a, r2b, r2c, r2d = st.columns(4)
-        with r2a:
-            me_desc = st.text_input("📝 Description",
-                                    placeholder="e.g. Horizontal Drum",
-                                    key="me_desc")
-        with r2b:
-            me_design = st.text_input("📐 Design",
-                                      placeholder="e.g. Monolithic",
-                                      key="me_design")
-        with r2c:
-            me_matspec = st.text_input("🧱 Material Spec.",
-                                       placeholder="e.g. CASTABLE HI-AL",
-                                       key="me_matspec")
-        with r2d:
-            me_lintype = st.text_input("🔧 Lining Type",
-                                       placeholder="e.g. REFRACTORY",
-                                       key="me_lintype")
-
-        # Row 3: Lining System+ (full width)
-        st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">Lining System</div>',
-                    unsafe_allow_html=True)
-        me_linsys = st.text_area("🔗 Lining System+",
-                                  placeholder="e.g. SYSTEM 3 - MONOLITHIC CASTABLE",
-                                  height=70, key="me_linsys")
-
-        # Row 4: Lining System Code · Short Name · Lining Area · Surface Area
-        r4a, r4b, r4c, r4d = st.columns(4)
-        with r4a:
-            me_code  = st.text_input("⚙️ Lining System Code *",
-                                     placeholder="e.g. 3  (numeric)",
-                                     key="me_code")
-        with r4b:
-            me_sname = st.text_input("🏷️ System Short Name",
-                                     placeholder="e.g. MONOLITHIC",
-                                     key="me_sname")
-        with r4c:
-            me_linarea = st.number_input("📐 Lining Area (m²)", min_value=0.0,
-                                         value=0.0, step=0.1, format="%.2f",
-                                         key="me_linarea")
-        with r4d:
-            me_sqm = st.number_input("📏 Surface Area SQM *", min_value=0.0,
-                                     value=0.0, step=0.1, format="%.2f",
-                                     key="me_sqm",
-                                     help="Used directly for material demand calculation")
-
-        # Row 5: Dia/L · Ht/W · Remarks
-        st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">Dimensions & Notes</div>',
-                    unsafe_allow_html=True)
-        r5a, r5b, r5c, r5d = st.columns(4)
-        with r5a:
-            me_dial = st.text_input("📏 Dia / L", placeholder="e.g. 2.4 m",
-                                    key="me_dial")
-        with r5b:
-            me_htw  = st.text_input("📐 Ht. / W", placeholder="e.g. 3.6 m",
-                                    key="me_htw")
-        with r5c:
-            me_remarks = st.text_input("💬 Remarks",
-                                       placeholder="Optional notes",
-                                       key="me_remarks")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        me_submit = st.form_submit_button("💾 Save New Equipment",
-                                          use_container_width=False)
-
-    # ── Validation & DB write ──────────────────────────────────────────────────
-    if me_submit:
-        eq_tag_val     = me_tag.strip()
-        lining_code_val = me_code.strip()
-        sqm_val        = float(me_sqm)
-
-        if not eq_tag_val:
-            st.error("⚠️ Equipment Tag No. is required.")
-        elif not lining_code_val:
-            st.error("⚠️ Lining System Code is required.")
-        elif sqm_val <= 0:
-            st.error("⚠️ Surface Area SQM must be greater than 0.")
-        else:
-            try:
-                conn = get_db()
-                cur  = conn.cursor()
-
-                # INSERT into equipment
-                cur.execute("""
-                    INSERT INTO equipment (
-                        location, type, lining_system_code, lining_system_short_name,
-                        lining_type, equipment_tag, name, description,
-                        material_spec, design, surface_area_sqm, lining_systems,
-                        lining_area, dia_l, ht_w, remarks
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """, (
-                    me_loc, me_type.strip(), lining_code_val, me_sname.strip(),
-                    me_lintype.strip(), eq_tag_val, me_name.strip(), me_desc.strip(),
-                    me_matspec.strip(), me_design.strip(), sqm_val, me_linsys.strip(),
-                    float(me_linarea) if me_linarea else None,
-                    me_dial.strip() or None, me_htw.strip() or None,
-                    me_remarks.strip() or None,
-                ))
-
-                # CRITICAL: keep sqm_progress in sync so Daily Consumption tab works
-                cur.execute("""
-                    INSERT INTO sqm_progress (equipment_tag, lining_system_code,
-                                              original_sqm, done_sqm)
-                    VALUES (?, ?, ?, 0)
-                    ON CONFLICT(equipment_tag, lining_system_code)
-                    DO UPDATE SET original_sqm = excluded.original_sqm
-                """, (eq_tag_val, lining_code_val, sqm_val))
-
-                conn.commit()
-                conn.close()
-                st.cache_data.clear()
-                st.success(
-                    f"✅ Equipment **{eq_tag_val}** (Code {lining_code_val} · "
-                    f"{me_sname.strip() or 'N/A'}) saved as Sl. # {next_sl}. "
-                    f"SQM: {sqm_val:,.2f} m²"
-                )
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Database error: {e}")
-
-    # ── View existing equipment ────────────────────────────────────────────────
-    st.markdown("<br>", unsafe_allow_html=True)
-    with st.expander("📋 View Existing Equipment Database", expanded=False):
+    # ── Auto-fill helper for Equipment smart entry ─────────────────────────────
+    def _get_autofill(code: str) -> dict:
         conn = get_db()
-        eq_view = pd.read_sql("""
-            SELECT
-                id                       AS "Sl.#",
-                equipment_tag            AS "Tag No.",
-                name                     AS "Name",
-                location                 AS "Location",
-                type                     AS "Type",
-                lining_system_code       AS "Code",
-                lining_system_short_name AS "System Name",
-                lining_type              AS "Lining Type",
-                material_spec            AS "Material Spec.",
-                design                   AS "Design",
-                surface_area_sqm         AS "SQM",
-                lining_area              AS "Lining Area",
-                dia_l                    AS "Dia/L",
-                ht_w                     AS "Ht/W",
-                lining_systems           AS "Lining System+",
-                remarks                  AS "Remarks"
-            FROM equipment
-            ORDER BY id
-        """, conn)
+        rec = conn.execute(
+            "SELECT lining_system_short_name, lining_type FROM recipe "
+            "WHERE lining_system_code = ? LIMIT 1", (code,)
+        ).fetchone()
+        eq_row = conn.execute(
+            'SELECT "Lining_System", "Material Spec.", "Lining_Area/location" FROM equipment '
+            'WHERE lining_system_code = ? AND "Lining_System" IS NOT NULL LIMIT 1', (code,)
+        ).fetchone()
+        conn.close()
+        return {
+            "lining_system_short_name": rec["lining_system_short_name"] if rec else "",
+            "lining_type":              rec["lining_type"]              if rec else "",
+            "Lining_System":            eq_row["Lining_System"]         if eq_row else "",
+            "Material Spec.":           eq_row["Material Spec."]        if eq_row else "",
+            "Lining_Area/location":     eq_row["Lining_Area/location"]  if eq_row else None,
+        }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ADD NEW ROW SECTION
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="sec-hdr">➕ Add New Row</div>', unsafe_allow_html=True)
+
+    # ── EQUIPMENT: Smart Entry ─────────────────────────────────────────────────
+    if md_table_sel == "Equipment":
+        conn = get_db()
+        recipe_codes_df = pd.read_sql(
+            "SELECT DISTINCT lining_system_code, lining_system_short_name, lining_type "
+            "FROM recipe ORDER BY CAST(lining_system_code AS INTEGER)", conn)
         conn.close()
 
-        st.dataframe(eq_view, use_container_width=True, hide_index=True,
-                     height=min(600, 50 + len(eq_view) * 35),
-                     key="master_eq_tbl")
-        st.caption(f"{len(eq_view)} row(s) in equipment table.")
+        code_opts = [
+            f"Code {r.lining_system_code} — {r.lining_system_short_name}"
+            for _, r in recipe_codes_df.iterrows()
+        ]
+        sel_codes_display = st.multiselect(
+            "🔧 Select Lining System Code(s) *",
+            options=code_opts, key="seq_codes_pre",
+            help="One row will be inserted into the equipment table per selected code.",
+        )
+
+        if sel_codes_display:
+            conn = get_db()
+            eq_col_info = conn.execute("PRAGMA table_info(equipment)").fetchall()
+            conn.close()
+
+            SKIP_FOR_FORM = {
+                "id", "lining_system_code", "lining_system_short_name",
+                "lining_type",
+                "lining_system",         # actual DB col: "Lining_System"
+                "material spec.",        # actual DB col: "Material Spec."
+                "lining_area/location",  # actual DB col: "Lining_Area/location"
+                "equipment_tag", "surface_area_sqm", "location",
+                "sl. #", "sl.#", "sl. no.", "sl. no", "sl.no.",
+            }
+            _skip_ff_lower = {s.lower() for s in SKIP_FOR_FORM}
+            shared_cols = [(n, t) for (_, n, t, *__) in eq_col_info
+                           if n.lower() not in _skip_ff_lower]
+
+            with st.form(key="smart_eq_form"):
+                st.markdown('<div class="sec-hdr">Equipment Identity</div>',
+                            unsafe_allow_html=True)
+                _seq_c1, _seq_c2 = st.columns(2)
+                with _seq_c1:
+                    eq_tag_inp = st.text_input("🏷️ Equipment Tag No. *",
+                                               placeholder="e.g. V-1001", key="seq_tag")
+                with _seq_c2:
+                    loc_inp = st.selectbox("📍 Location *", options=LOCATION_ORDER,
+                                           key="seq_loc")
+
+                if shared_cols:
+                    st.markdown(
+                        '<div class="sec-hdr" style="margin-top:.8rem;">'
+                        'Equipment Details (shared across all selected codes)</div>',
+                        unsafe_allow_html=True)
+                    shared_inputs = {}
+                    for _si in range(0, len(shared_cols), 3):
+                        _row_cols = st.columns(3)
+                        for _sj, (_sn, _st) in enumerate(shared_cols[_si:_si+3]):
+                            with _row_cols[_sj]:
+                                if any(kw in _sn.lower() for kw in ("sqm", "qty", "for_1")):
+                                    shared_inputs[_sn] = st.number_input(
+                                        _sn.replace("_", " ").title(),
+                                        value=0.0, step=0.1, key=f"seq_sh_{_sn}")
+                                else:
+                                    shared_inputs[_sn] = st.text_input(
+                                        _sn.replace("_", " ").title(),
+                                        key=f"seq_sh_{_sn}")
+                else:
+                    shared_inputs = {}
+
+                st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">Per Lining System Code</div>',
+                            unsafe_allow_html=True)
+                per_code_sqm = {}
+                for _cd in sel_codes_display:
+                    _code = _cd.split(" — ")[0].replace("Code ", "").strip()
+                    _af   = _get_autofill(_code)
+                    st.markdown(
+                        f'<div style="margin:.5rem 0 .3rem;">'
+                        f'<span class="code-badge">Code {_code}</span>'
+                        f'<span style="font-size:.8rem;color:var(--t2);margin-left:.6rem;">'
+                        f'{_af["lining_system_short_name"]}</span></div>',
+                        unsafe_allow_html=True)
+                    _ca1, _ca2, _ca3 = st.columns(3)
+                    with _ca1:
+                        st.text_input("Lining System Short Name",
+                                      value=_af["lining_system_short_name"],
+                                      disabled=True, key=f"seq_sn_{_code}")
+                    with _ca2:
+                        st.text_input("Lining Type",
+                                      value=_af["lining_type"],
+                                      disabled=True, key=f"seq_lt_{_code}")
+                    with _ca3:
+                        st.text_input("Material Spec.",
+                                      value=_af["Material Spec."] or "",
+                                      disabled=True, key=f"seq_ms_{_code}")
+                    _cb1, _cb2 = st.columns(2)
+                    with _cb1:
+                        st.text_input("Lining System+",
+                                      value=_af["Lining_System"] or "",
+                                      disabled=True, key=f"seq_ls_{_code}")
+                    with _cb2:
+                        per_code_sqm[_code] = st.number_input(
+                            f"Surface Area SQM * (Code {_code})",
+                            min_value=0.0, value=0.0, step=0.1, format="%.2f",
+                            key=f"seq_sqm_{_code}",
+                            help="Required — used for material demand calculation.")
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                seq_submit = st.form_submit_button("💾 Save Equipment",
+                                                   use_container_width=False)
+
+            if seq_submit:
+                _eq_tag_val = st.session_state.get("seq_tag", "").strip()
+                if not _eq_tag_val:
+                    st.error("Equipment Tag No. is required.")
+                elif not sel_codes_display:
+                    st.error("Select at least one Lining System Code.")
+                else:
+                    _missing_shared = [
+                        k.replace("_", " ").title()
+                        for k, v in shared_inputs.items()
+                        if isinstance(v, str) and v.strip() == ""
+                    ]
+                    _bad = [c for c in per_code_sqm if per_code_sqm[c] <= 0]
+                    if _missing_shared:
+                        st.error(f"Please fill in all mandatory fields: {', '.join(_missing_shared)}")
+                    elif _bad:
+                        st.error(f"Surface Area SQM must be > 0 for codes: {', '.join(_bad)}")
+                    else:
+                        try:
+                            conn = get_db(); cur = conn.cursor()
+                            for _cd in sel_codes_display:
+                                _code = _cd.split(" — ")[0].replace("Code ", "").strip()
+                                _af   = _get_autofill(_code)
+                                _sqm  = per_code_sqm[_code]
+                                # Build INSERT dynamically from shared_inputs + fixed fields
+                                _fixed = {
+                                    "location":                st.session_state.get("seq_loc", LOCATION_ORDER[0]),
+                                    "lining_system_code":      _code,
+                                    "lining_system_short_name": _af["lining_system_short_name"],
+                                    "lining_type":             _af["lining_type"],
+                                    "equipment_tag":           _eq_tag_val,
+                                    "Material Spec.":          _af["Material Spec."] or None,
+                                    "surface_area_sqm":        _sqm,
+                                    "Lining_System":           _af["Lining_System"] or None,
+                                    "Lining_Area/location":    _af.get("Lining_Area/location"),
+                                }
+                                _all_vals = {**_fixed}
+                                for _k, _v in shared_inputs.items():
+                                    _all_vals[_k] = _v if _v != "" else None
+                                _cols_str = ", ".join([f'"{c}"' for c in _all_vals.keys()])
+                                _ph       = ", ".join(["?"] * len(_all_vals))
+                                cur.execute(
+                                    f"INSERT INTO equipment ({_cols_str}) VALUES ({_ph})",
+                                    list(_all_vals.values()))
+                                cur.execute("""
+                                    INSERT INTO sqm_progress
+                                        (equipment_tag, lining_system_code,
+                                         original_sqm, done_sqm)
+                                    VALUES (?, ?, ?, 0)
+                                    ON CONFLICT(equipment_tag, lining_system_code)
+                                    DO UPDATE SET original_sqm = excluded.original_sqm
+                                """, (_eq_tag_val, _code, _sqm))
+                            conn.commit(); conn.close()
+                            _eq_form_keys = (
+                                ["seq_tag", "seq_loc", "seq_codes_pre"]
+                                + [f"seq_sh_{n}" for n, _ in shared_cols]
+                                + [k for k in list(st.session_state.keys())
+                                   if k.startswith(("seq_sn_", "seq_lt_",
+                                                    "seq_ms_", "seq_ls_", "seq_sqm_"))]
+                            )
+                            for _k in _eq_form_keys:
+                                st.session_state.pop(_k, None)
+                            st.cache_data.clear()
+                            st.success(
+                                f"✅ Equipment **{_eq_tag_val}** saved for "
+                                f"{len(sel_codes_display)} system code(s).")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Database error: {e}")
+        else:
+            st.info("Select one or more Lining System Codes above to build the entry form.")
+
+    # ── RECIPE / INVENTORY: Dynamic form from PRAGMA ───────────────────────────
+    else:
+        conn = get_db()
+        col_info = conn.execute(f"PRAGMA table_info({db_table})").fetchall()
+        conn.close()
+
+        SKIP_DYN = {"id", "sl. #", "sl.#", "sl. no.", "sl. no", "sl.no."}
+        _skip_dyn_lower = {s.lower() for s in SKIP_DYN}
+        editable_cols = [(n, t) for (_, n, t, *__) in col_info
+                         if n.lower() not in _skip_dyn_lower]
+
+        with st.form(key=f"dyn_add_{db_table}"):
+            dyn_inputs = {}
+            for _di in range(0, len(editable_cols), 3):
+                _drow = st.columns(3)
+                for _dj, (_dn, _dt) in enumerate(editable_cols[_di:_di+3]):
+                    with _drow[_dj]:
+                        if any(kw in _dn.lower() for kw in ("sqm", "qty", "for_1")):
+                            dyn_inputs[_dn] = st.number_input(
+                                _dn.replace("_", " ").title(),
+                                value=0.0, step=0.001, format="%.4f",
+                                key=f"dyn_{db_table}_{_dn}")
+                        else:
+                            dyn_inputs[_dn] = st.text_input(
+                                _dn.replace("_", " ").title(),
+                                key=f"dyn_{db_table}_{_dn}")
+            st.markdown("<br>", unsafe_allow_html=True)
+            dyn_submit = st.form_submit_button(f"➕ Add Row to {md_table_sel}")
+
+        if dyn_submit:
+            _missing_fields = []
+            for _fn, _fv in dyn_inputs.items():
+                if isinstance(_fv, str) and _fv.strip() == "":
+                    _missing_fields.append(_fn.replace("_", " ").title())
+                elif isinstance(_fv, float) and _fv == 0.0:
+                    if any(kw in _fn.lower() for kw in ("sqm", "qty")):
+                        _missing_fields.append(_fn.replace("_", " ").title())
+            if _missing_fields:
+                st.error(f"Please fill in all mandatory fields: {', '.join(_missing_fields)}")
+            else:
+                try:
+                    conn = get_db(); cur = conn.cursor()
+                    _dcols = list(dyn_inputs.keys())
+                    _dvals = [dyn_inputs[c] if dyn_inputs[c] != "" else None for c in _dcols]
+                    _cols_str = ", ".join([f'"{c}"' for c in _dcols])
+                    _ph       = ", ".join(["?"] * len(_dcols))
+                    cur.execute(f"INSERT INTO {db_table} ({_cols_str}) VALUES ({_ph})", _dvals)
+                    conn.commit(); conn.close()
+                    for _k in list(st.session_state.keys()):
+                        if _k.startswith(f"dyn_{db_table}_"):
+                            del st.session_state[_k]
+                    st.cache_data.clear()
+                    st.success("✅ Row added successfully.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Database error: {e}")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # VIEW & DELETE SECTION
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(f'<div class="sec-hdr">📋 View & Delete — {md_table_sel}</div>',
+                unsafe_allow_html=True)
+
+    conn = get_db()
+    try:
+        view_df = pd.read_sql(f"SELECT * FROM {db_table} ORDER BY rowid", conn)
+    except Exception:
+        view_df = pd.DataFrame()
+    conn.close()
+
+    if view_df.empty:
+        st.info("No records found in this table.")
+    else:
+        view_df_display = view_df.copy()
+        _sl_db_cols = [c for c in view_df_display.columns
+                       if c.lower().strip() in {"sl. #", "sl.#", "sl. no.", "sl.no.", "sl. no"}]
+        view_df_display = view_df_display.drop(columns=_sl_db_cols, errors="ignore")
+        view_df_display.insert(0, "Sl. No.", range(1, len(view_df_display) + 1))
+
+        st.dataframe(view_df_display, hide_index=True, use_container_width=True,
+                     height=min(600, 50 + len(view_df_display) * 35),
+                     key=f"md_view_{db_table}")
+        st.caption(f"{len(view_df_display)} row(s) in `{db_table}` table.")
 
         st.download_button(
-            "⬇ Download Equipment Table",
-            data=excel_bytes(eq_view,
-                             report_title="Equipment Master — Smart Material Estimator"),
-            file_name=f"equipment_master_{date.today()}.xlsx",
+            f"⬇ Download {md_table_sel} Table",
+            data=excel_bytes(
+                view_df_display.drop(columns=["Sl. No."], errors="ignore"),
+                report_title=f"{md_table_sel} — Smart Material Estimator"),
+            file_name=f"{db_table}_export_{date.today()}.xlsx",
             mime="application/vnd.ms-excel",
-            key="dl_eq_master"
+            key=f"dl_{db_table}",
         )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="sec-hdr">🗑️ Delete a Row</div>', unsafe_allow_html=True)
+
+        PK_MAP = {
+            "equipment":  ("id",            int),
+            "recipe":     ("id",            int),
+            "inventory":  ("material_code", str),
+        }
+        pk_col, pk_cast = PK_MAP.get(db_table, ("id", int))
+
+        if pk_col in view_df.columns:
+            pk_options = view_df[pk_col].tolist()
+            with st.form(key=f"del_form_{db_table}", clear_on_submit=True):
+                del_id = st.selectbox(
+                    f"Select `{pk_col}` to Delete",
+                    options=pk_options,
+                    key=f"del_sel_{db_table}",
+                )
+                st.caption(
+                    "⚠️ Deletion is permanent. For Equipment rows, "
+                    "the matching sqm_progress record is also removed.")
+                del_submit = st.form_submit_button("🗑️ Delete Selected Row")
+
+            if del_submit and del_id is not None:
+                try:
+                    conn = get_db(); cur = conn.cursor()
+                    cur.execute(f'DELETE FROM {db_table} WHERE "{pk_col}" = ?',
+                                (pk_cast(del_id),))
+                    if db_table == "equipment":
+                        _match = view_df[view_df[pk_col] == del_id]
+                        if not _match.empty:
+                            _er = _match.iloc[0]
+                            cur.execute(
+                                "DELETE FROM sqm_progress "
+                                "WHERE equipment_tag = ? AND lining_system_code = ?",
+                                (_er["equipment_tag"], _er["lining_system_code"]),
+                            )
+                    conn.commit(); conn.close()
+                    st.cache_data.clear()
+                    st.success(f"✅ Row `{del_id}` deleted from `{db_table}`.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Database error: {e}")
+        else:
+            st.warning(f"Primary key column `{pk_col}` not found in table.")

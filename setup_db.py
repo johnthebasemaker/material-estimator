@@ -1,314 +1,135 @@
 """
-Smart Material Estimator — setup_db.py
-=======================================
-One-time script: converts your three Excel files into a normalised
-SQLite database (sme_database.db).
-
-Run ONCE from the project folder:
-    python setup_db.py
-
-Re-run any time you update the source Excel files to refresh master data.
-Consumption logs and SQM progress are preserved across re-runs.
+Smart Material Estimator — Dynamic setup_db.py
+===============================================
+Syncs Excel data to SQLite. Automatically detects new columns
+added to Excel and adds them to the SQLite database without losing data.
 """
 
-import os, sys, sqlite3
+import os, sqlite3
 import pandas as pd
-import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "sme_database.db")
 PATH_A   = os.path.join(BASE_DIR, "Materials_DetailsAvailable_Qty.xlsx")
 PATH_B   = os.path.join(BASE_DIR, "For_1_SQM.xlsx")
 PATH_C   = os.path.join(BASE_DIR, "Equipment.xlsx")
-SHEET_A, SHEET_B, SHEET_C = "Materials", "LINING SYSTEM MATERIAL CONSM", "Data Input"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DATABASE SCHEMA
-# ─────────────────────────────────────────────────────────────────────────────
 SCHEMA = """
--- ── Master: inventory (one row per unique Material_Code) ───────────────────
-CREATE TABLE IF NOT EXISTS inventory (
-    material_code    TEXT    PRIMARY KEY,
-    material_name    TEXT,
-    nature           TEXT,
-    uom              TEXT,
-    available_qty    REAL    NOT NULL DEFAULT 0,
-    ordered_qty      REAL    NOT NULL DEFAULT 0
-);
-
--- ── Master: lining system recipe (For_1_SQM per material per system code) ──
-CREATE TABLE IF NOT EXISTS recipe (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    lining_system_code       TEXT NOT NULL,
-    lining_system_short_name TEXT,
-    lining_type              TEXT,
-    material_code            TEXT NOT NULL,
-    material_description     TEXT,
-    material_name            TEXT,
-    for_1_sqm                REAL,
-    uom                      TEXT,
-    FOREIGN KEY (material_code) REFERENCES inventory(material_code)
-);
-
--- ── Master: equipment surface areas (one row per tag+code+area section) ────
-CREATE TABLE IF NOT EXISTS equipment (
-    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-    location                 TEXT,
-    type                     TEXT,
-    lining_system_code       TEXT,
-    lining_system_short_name TEXT,
-    lining_type              TEXT,
-    equipment_tag            TEXT NOT NULL,
-    name                     TEXT,
-    description              TEXT,
-    material_spec            TEXT,
-    design                   TEXT,
-    surface_area_sqm         REAL,
-    lining_systems           TEXT,
-    lining_area              REAL,
-    dia_l                    TEXT,
-    ht_w                     TEXT,
-    remarks                  TEXT
-);
-
--- ── Live: SQM progress (tracks completed SQM per tag+code) ─────────────────
--- done_sqm starts at 0 and increases with each consumption entry.
--- remaining_sqm = original_sqm - done_sqm
-CREATE TABLE IF NOT EXISTS sqm_progress (
-    equipment_tag      TEXT NOT NULL,
-    lining_system_code TEXT NOT NULL,
-    original_sqm       REAL NOT NULL DEFAULT 0,
-    done_sqm           REAL NOT NULL DEFAULT 0,
-    PRIMARY KEY (equipment_tag, lining_system_code)
-);
-
--- ── Live: daily consumption log ────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS consumption_log (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    entry_date           TEXT    NOT NULL,
-    equipment_tag        TEXT    NOT NULL,
-    lining_system_code   TEXT    NOT NULL,
-    lining_system_name   TEXT,
-    sqm_completed        REAL    NOT NULL DEFAULT 0,
-    material_code        TEXT    NOT NULL,
-    material_name        TEXT,
-    uom                  TEXT,
-    expected_qty         REAL,
-    consumed_qty         REAL    NOT NULL DEFAULT 0,
-    notes                TEXT,
-    submitted_at         TEXT    DEFAULT (datetime('now'))
-);
-
--- ── Live: material receipt log ────────────────────────────────────────────
--- Every receipt entry ADDS to inventory.available_qty.
-CREATE TABLE IF NOT EXISTS receipt_log (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    entry_date           TEXT    NOT NULL,
-    material_code        TEXT    NOT NULL,
-    material_name        TEXT,
-    uom                  TEXT,
-    received_qty         REAL    NOT NULL DEFAULT 0,
-    notes                TEXT,
-    submitted_at         TEXT    DEFAULT (datetime('now')),
-    FOREIGN KEY (material_code) REFERENCES inventory(material_code)
-);
+CREATE TABLE IF NOT EXISTS inventory (material_code TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS recipe (id INTEGER PRIMARY KEY AUTOINCREMENT, lining_system_code TEXT NOT NULL, material_code TEXT NOT NULL, FOREIGN KEY (material_code) REFERENCES inventory(material_code));
+CREATE TABLE IF NOT EXISTS equipment (id INTEGER PRIMARY KEY AUTOINCREMENT, equipment_tag TEXT NOT NULL, lining_system_code TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sqm_progress (equipment_tag TEXT NOT NULL, lining_system_code TEXT NOT NULL, original_sqm REAL NOT NULL DEFAULT 0, done_sqm REAL NOT NULL DEFAULT 0, PRIMARY KEY (equipment_tag, lining_system_code));
+CREATE TABLE IF NOT EXISTS consumption_log (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_date TEXT NOT NULL, equipment_tag TEXT NOT NULL, lining_system_code TEXT NOT NULL, sqm_completed REAL NOT NULL DEFAULT 0, material_code TEXT NOT NULL, expected_qty REAL, consumed_qty REAL NOT NULL DEFAULT 0, submitted_at TEXT DEFAULT (datetime('now')));
+CREATE TABLE IF NOT EXISTS receipt_log (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_date TEXT NOT NULL, material_code TEXT NOT NULL, received_qty REAL NOT NULL DEFAULT 0, submitted_at TEXT DEFAULT (datetime('now')), FOREIGN KEY (material_code) REFERENCES inventory(material_code));
 """
 
-
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
-
-
-def _migrate_equipment_columns(conn):
-    """Add new columns to equipment table if they don't exist (safe for existing DBs)."""
+def dynamic_sync_table(conn, df, table_name, primary_keys):
+    """Dynamically adds missing columns to the DB, then upserts data."""
+    # 1. Clean up accidental Excel ghost columns (like 'Unnamed: 10')
+    df = df.loc[:, ~df.columns.str.contains('^Unnamed', case=False, na=False)].copy()
+    
+    # 2. Convert any Date/Time columns to strings so SQLite doesn't crash
+    for col in df.select_dtypes(include=['datetime', 'datetimetz']).columns:
+        df[col] = df[col].astype(str)
+        
     cur = conn.cursor()
-    existing = {row[1] for row in cur.execute("PRAGMA table_info(equipment)").fetchall()}
-    new_cols = {"lining_area": "REAL", "dia_l": "TEXT", "ht_w": "TEXT", "remarks": "TEXT"}
-    added = []
-    for col, dtype in new_cols.items():
-        if col not in existing:
-            cur.execute(f"ALTER TABLE equipment ADD COLUMN {col} {dtype}")
-            added.append(col)
-    conn.commit()
-    if added:
-        print(f"  ✅ Migrated new equipment columns: {', '.join(added)}")
-    else:
-        print("  ✅ Equipment columns already up to date.")
+    
+    # 3. Get existing DB columns and convert to lowercase for safe comparison
+    existing_cols = {row[1].lower() for row in cur.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    pk_lower = [pk.lower() for pk in primary_keys]
+    
+    # 4. Add missing columns from Excel DataFrame to DB
+    for col in df.columns:
+        if col.lower() not in existing_cols and col.lower() not in pk_lower:
+            dtype = "REAL" if pd.api.types.is_numeric_dtype(df[col]) else "TEXT"
+            # FIX: Use double quotes around the column name to safely handle apostrophes
+            cur.execute(f'ALTER TABLE {table_name} ADD COLUMN "{col}" {dtype}')
+            print(f"  [+] Added new column '{col}' to {table_name}")
+            
+    # 5. Clear old master data and insert new (Does not clear logs/progress)
+    cur.execute(f"DELETE FROM {table_name}")
+    
+    # 6. Insert data dynamically
+    # FIX: Use double quotes around the column names here as well
+    cols = ",".join([f'"{c}"' for c in df.columns])
+    placeholders = ",".join(["?"] * len(df.columns))
+    sql = f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders})"
+    
+    # Convert df to records, replacing NaN with None for SQLite
+    records = df.where(pd.notnull(df), None).values.tolist()
+    cur.executemany(sql, records)
+    print(f"  ✅ {table_name:<15}: Synced {len(df)} rows.")
 
-
-def load_clean_excel():
-    """Load and clean all three Excel source files."""
-
-    # ── File A: Inventory ────────────────────────────────────────────────────
-    df_a = pd.read_excel(PATH_A, sheet_name=SHEET_A)
+def load_and_clean_excel():
+    # File A
+    df_a = pd.read_excel(PATH_A, sheet_name="Materials")
     df_a.columns = df_a.columns.str.strip()
-    df_a["Material_Code"] = df_a["Material_Code"].astype(str).str.strip()
-    df_a["Material_Name"] = df_a["Material_Name"].astype(str).str.strip()
-    df_a["Available_Qty"] = pd.to_numeric(df_a["Available_Qty"], errors="coerce").fillna(0)
-
-    # Detect ordered qty column
-    ordered_col = None
-    for c in df_a.columns:
-        if c.strip() in ("Ordered_Qty", "Balance To Be Received"):
-            ordered_col = c; break
-    if ordered_col:
-        df_a[ordered_col] = pd.to_numeric(df_a[ordered_col], errors="coerce").fillna(0)
-    else:
-        df_a["Ordered_Qty"] = 0.0
-        ordered_col = "Ordered_Qty"
-
-    inv = df_a.groupby("Material_Code", as_index=False).agg(
-        Material_Name =("Material_Name", "first"),
-        Nature        =("Nature",        "first"),
-        UOM           =("UOM",           "first"),
-        Available_Qty =("Available_Qty", "sum"),
-        Ordered_Qty   =(ordered_col,     "sum"),
-    )
-
-    # ── File B: Recipe ───────────────────────────────────────────────────────
-    df_b = pd.read_excel(PATH_B, sheet_name=SHEET_B)
+    df_a.rename(columns={"Material_Code": "material_code"}, inplace=True)
+    df_a["material_code"] = df_a["material_code"].astype(str).str.strip()
+    
+    # ── FIX 1: Convert empty quantities to 0 so SQLite doesn't crash ──
+    if "Available_Qty" in df_a.columns:
+        df_a["Available_Qty"] = pd.to_numeric(df_a["Available_Qty"], errors="coerce").fillna(0.0)
+    if "Ordered_Qty" in df_a.columns:
+        df_a["Ordered_Qty"] = pd.to_numeric(df_a["Ordered_Qty"], errors="coerce").fillna(0.0)
+        
+    # ── FIX 2: Squash duplicate Material Codes to prevent UNIQUE constraint crash ──
+    # Sums numeric columns (like Qty) and takes the first value for text/date columns
+    agg_dict = {}
+    for col in df_a.columns:
+        if col == "material_code":
+            continue
+        elif pd.api.types.is_numeric_dtype(df_a[col]):
+            agg_dict[col] = "sum"
+        else:
+            agg_dict[col] = "first"
+            
+    df_a = df_a.groupby("material_code", as_index=False).agg(agg_dict)
+    # ────────────────────────────────────────────────────────────────
+    
+    # File B
+    df_b = pd.read_excel(PATH_B, sheet_name="LINING SYSTEM MATERIAL CONSM")
     df_b.columns = df_b.columns.str.strip()
     df_b = df_b.dropna(subset=["Lining_System_Code", "Material_Code"])
-    df_b["Material_Code"] = df_b["Material_Code"].astype(str).str.strip()
-    df_b = df_b.assign(
-        Material_Code=df_b["Material_Code"].str.split(r",\s*")
-    ).explode("Material_Code").reset_index(drop=True)
-    df_b["Material_Code"] = df_b["Material_Code"].str.strip()
-    df_b["Lining_System_Code"] = (
-        df_b["Lining_System_Code"].astype(float).astype(int).astype(str)
-    )
-    df_b["For_1_SQM"] = pd.to_numeric(df_b["For_1_SQM"], errors="coerce")
-    recipe = df_b[[
-        "Lining_System_Code", "Lining_System_Short_Name", "Lining_Type",
-        "Material_Code", "Material_Description", "Material_Name", "For_1_SQM", "UOM"
-    ]].copy()
+    df_b.rename(columns={"Lining_System_Code": "lining_system_code", "Material_Code": "material_code"}, inplace=True)
+    df_b["lining_system_code"] = df_b["lining_system_code"].astype(float).astype(int).astype(str)
+    df_b = df_b.assign(material_code=df_b["material_code"].astype(str).str.split(r",\s*")).explode("material_code")
+    df_b["material_code"] = df_b["material_code"].str.strip()
 
-    # ── File C: Equipment ────────────────────────────────────────────────────
-    df_c = pd.read_excel(PATH_C, sheet_name=SHEET_C)
+    # File C
+    df_c = pd.read_excel(PATH_C, sheet_name="Data Input")
     df_c.columns = df_c.columns.str.strip()
     df_c = df_c.dropna(subset=["Equipment_Tag_No.", "Lining_System_Code"])
-    df_c["Equipment_Tag_No."] = df_c["Equipment_Tag_No."].astype(str).str.strip()
-    df_c["Location"]           = df_c["Location"].astype(str).str.strip()
-    df_c["Type"]               = df_c["Type"].astype(str).str.strip()
-    df_c["Surface_Area_SQM"]   = pd.to_numeric(df_c["Surface_Area_SQM"], errors="coerce")
-    df_c["Lining_System_Code"] = (
-        df_c["Lining_System_Code"].astype(float).astype(int).astype(str)
-    )
-    # Strip whitespace from all string columns
-    for col in ["Name", "Description", "Lining_System_Short_Name"]:
-        if col in df_c.columns:
-            df_c[col] = df_c[col].astype(str).str.strip()
-    equip = df_c[[
-        "Location", "Type", "Lining_System_Code", "Lining_System_Short_Name",
-        "Lining_Type", "Equipment_Tag_No.", "Name", "Description",
-        "Material Spec.", "Design", "Surface_Area_SQM", "Lining_System+"
-    ]].copy()
-
-    return inv, recipe, equip
-
-
-def seed_database(conn, inv, recipe, equip):
-    """Insert master data. Safe to re-run: clears and reloads master tables,
-    but preserves consumption_log and sqm_progress."""
-    cur = conn.cursor()
-
-    # ── Rebuild master tables ─────────────────────────────────────────────
-    cur.execute("DELETE FROM inventory")
-    cur.execute("DELETE FROM recipe")
-    cur.execute("DELETE FROM equipment")
-
-    # inventory
-    for _, r in inv.iterrows():
-        cur.execute("""
-            INSERT INTO inventory (material_code, material_name, nature, uom,
-                                   available_qty, ordered_qty)
-            VALUES (?,?,?,?,?,?)
-        """, (r["Material_Code"], r["Material_Name"], r.get("Nature",""),
-              r["UOM"], r["Available_Qty"], r.get("Ordered_Qty", 0)))
-
-    # recipe
-    for _, r in recipe.iterrows():
-        cur.execute("""
-            INSERT INTO recipe (lining_system_code, lining_system_short_name,
-                                lining_type, material_code, material_description,
-                                material_name, for_1_sqm, uom)
-            VALUES (?,?,?,?,?,?,?,?)
-        """, (r["Lining_System_Code"], r.get("Lining_System_Short_Name",""),
-              r.get("Lining_Type",""), r["Material_Code"],
-              r.get("Material_Description",""), r.get("Material_Name",""),
-              r.get("For_1_SQM", 0), r.get("UOM","")))
-
-    # equipment
-    for _, r in equip.iterrows():
-        cur.execute("""
-            INSERT INTO equipment (location, type, lining_system_code,
-                                   lining_system_short_name, lining_type,
-                                   equipment_tag, name, description,
-                                   material_spec, design, surface_area_sqm,
-                                   lining_systems, lining_area, dia_l, ht_w, remarks)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (r["Location"], r["Type"], r["Lining_System_Code"],
-              r.get("Lining_System_Short_Name",""), r.get("Lining_Type",""),
-              r["Equipment_Tag_No."], r.get("Name",""), r.get("Description",""),
-              r.get("Material Spec.",""), r.get("Design",""),
-              r.get("Surface_Area_SQM", 0), r.get("Lining_System+",""),
-              None, None, None, None))
-
-    # ── Seed sqm_progress (insert only new rows, preserve existing done_sqm) ─
-    equip_sc = equip.groupby(
-        ["Equipment_Tag_No.", "Lining_System_Code"], as_index=False
-    )["Surface_Area_SQM"].sum()
-
-    for _, r in equip_sc.iterrows():
-        cur.execute("""
-            INSERT INTO sqm_progress (equipment_tag, lining_system_code,
-                                      original_sqm, done_sqm)
-            VALUES (?,?,?,0)
-            ON CONFLICT(equipment_tag, lining_system_code)
-            DO UPDATE SET original_sqm = excluded.original_sqm
-        """, (r["Equipment_Tag_No."], r["Lining_System_Code"],
-              r["Surface_Area_SQM"]))
-
-    conn.commit()
-    print(f"  ✅ inventory     : {len(inv)} rows")
-    print(f"  ✅ recipe        : {len(recipe)} rows")
-    print(f"  ✅ equipment     : {len(equip)} rows")
-    print(f"  ✅ sqm_progress  : {len(equip_sc)} (tag, code) pairs seeded")
-
+    df_c.rename(columns={"Equipment_Tag_No.": "equipment_tag", "Lining_System_Code": "lining_system_code"}, inplace=True)
+    df_c["equipment_tag"] = df_c["equipment_tag"].astype(str).str.strip()
+    df_c["lining_system_code"] = df_c["lining_system_code"].astype(float).astype(int).astype(str)
+    
+    return df_a, df_b, df_c
 
 def main():
-    print("=" * 60)
-    print("  Smart Material Estimator — Database Setup")
-    print("=" * 60)
-    print(f"\n  Database: {DB_PATH}\n")
-
-    print("  Loading and cleaning Excel files…")
-    inv, recipe, equip = load_clean_excel()
-
-    print("  Creating schema…")
-    conn = connect()
+    print("=" * 60 + "\n  Smart Material Estimator — Dynamic Database Setup\n" + "=" * 60)
+    df_a, df_b, df_c = load_and_clean_excel()
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    
+    dynamic_sync_table(conn, df_a, "inventory", ["material_code"])
+    dynamic_sync_table(conn, df_b, "recipe", ["id"])
+    dynamic_sync_table(conn, df_c, "equipment", ["id"])
+    
+    # Seed SQM Progress (Preserves existing done_sqm)
+    sqm_data = df_c.groupby(["equipment_tag", "lining_system_code"], as_index=False)["Surface_Area_SQM"].sum()
+    for _, r in sqm_data.iterrows():
+        conn.execute("""
+            INSERT INTO sqm_progress (equipment_tag, lining_system_code, original_sqm, done_sqm)
+            VALUES (?,?,COALESCE(?, 0),0) ON CONFLICT(equipment_tag, lining_system_code)
+            DO UPDATE SET original_sqm = excluded.original_sqm
+        """, (r["equipment_tag"], r["lining_system_code"], r.get("Surface_Area_SQM", 0)))
+    
     conn.commit()
-
-    print("  Migrating equipment columns…")
-    _migrate_equipment_columns(conn)
-
-    print("  Seeding master data…")
-    seed_database(conn, inv, recipe, equip)
-
-    # Summary
-    cur = conn.cursor()
-    for tbl in ["inventory","recipe","equipment","sqm_progress","consumption_log","receipt_log"]:
-        n = cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-        print(f"    {tbl:<22}: {n} rows")
-
     conn.close()
-    print("\n  ✅ sme_database.db is ready.\n")
-    print("  Next step: run  streamlit run app.py")
-
+    print("\n  ✅ Database is ready and columns are synced. Run streamlit run app.py")
 
 if __name__ == "__main__":
     main()
