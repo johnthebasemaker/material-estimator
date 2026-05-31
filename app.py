@@ -3379,7 +3379,7 @@ with tab_master:
     # VIEW & DELETE SECTION
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown(f'<div class="sec-hdr">📋 View & Delete — {md_table_sel}</div>',
+    st.markdown(f'<div class="sec-hdr">📋 View, Edit & Delete — {md_table_sel}</div>',
                 unsafe_allow_html=True)
 
     conn = get_db()
@@ -3388,6 +3388,13 @@ with tab_master:
     except Exception:
         view_df = pd.DataFrame()
     conn.close()
+
+    PK_MAP = {
+        "equipment":  ("id",            int),
+        "recipe":     ("id",            int),
+        "inventory":  ("material_code", str),
+    }
+    pk_col, pk_cast = PK_MAP.get(db_table, ("id", int))
 
     if view_df.empty:
         st.info("No records found in this table.")
@@ -3398,10 +3405,55 @@ with tab_master:
         view_df_display = view_df_display.drop(columns=_sl_db_cols, errors="ignore")
         view_df_display.insert(0, "Sl. No.", range(1, len(view_df_display) + 1))
 
-        st.dataframe(view_df_display, hide_index=True, use_container_width=True,
-                     height=min(600, 50 + len(view_df_display) * 35),
-                     key=f"md_view_{db_table}")
+        # Build column_config: lock Sl. No. and the primary key column
+        _col_cfg = {
+            "Sl. No.": st.column_config.NumberColumn("Sl. No.", disabled=True),
+        }
+        if pk_col in view_df_display.columns:
+            _cfg_type = (st.column_config.NumberColumn if pk_cast == int
+                         else st.column_config.TextColumn)
+            _col_cfg[pk_col] = _cfg_type(pk_col, disabled=True)
+
+        st.data_editor(
+            view_df_display,
+            key=f"md_editor_{db_table}",
+            num_rows="fixed",
+            hide_index=True,
+            use_container_width=True,
+            height=min(600, 50 + len(view_df_display) * 35),
+            column_config=_col_cfg,
+        )
         st.caption(f"{len(view_df_display)} row(s) in `{db_table}` table.")
+
+        if st.button("💾 Save Cell Edits", type="primary", key=f"save_edits_{db_table}"):
+            _editor_state = st.session_state.get(f"md_editor_{db_table}", {})
+            _edited_rows  = _editor_state.get("edited_rows", {})
+            if not _edited_rows:
+                st.info("No changes detected in the grid.")
+            else:
+                try:
+                    conn = get_db(); cur = conn.cursor()
+                    n_saved = 0
+                    for _row_idx, _changes in _edited_rows.items():
+                        # Guard: strip Sl. No. and pk_col — structural, must not be edited
+                        _safe = {k: v for k, v in _changes.items()
+                                 if k not in ("Sl. No.", pk_col)}
+                        if not _safe:
+                            continue
+                        _pk_val    = view_df.iloc[int(_row_idx)][pk_col]
+                        _set_parts = [f'"{k}" = ?' for k in _safe.keys()]
+                        _set_sql   = ", ".join(_set_parts)
+                        _vals      = list(_safe.values()) + [pk_cast(_pk_val)]
+                        cur.execute(
+                            f'UPDATE {db_table} SET {_set_sql} WHERE "{pk_col}" = ?',
+                            _vals)
+                        n_saved += 1
+                    conn.commit(); conn.close()
+                    st.cache_data.clear()
+                    st.success(f"✅ {n_saved} row(s) updated successfully.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Database error: {e}")
 
         st.download_button(
             f"⬇ Download {md_table_sel} Table",
@@ -3414,47 +3466,47 @@ with tab_master:
         )
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="sec-hdr">🗑️ Delete a Row</div>', unsafe_allow_html=True)
-
-        PK_MAP = {
-            "equipment":  ("id",            int),
-            "recipe":     ("id",            int),
-            "inventory":  ("material_code", str),
-        }
-        pk_col, pk_cast = PK_MAP.get(db_table, ("id", int))
+        st.markdown('<div class="sec-hdr">🗑️ Delete Rows</div>', unsafe_allow_html=True)
 
         if pk_col in view_df.columns:
             pk_options = view_df[pk_col].tolist()
             with st.form(key=f"del_form_{db_table}", clear_on_submit=True):
-                del_id = st.selectbox(
-                    f"Select `{pk_col}` to Delete",
+                del_ids = st.multiselect(
+                    f"Select `{pk_col}` values to delete (select multiple for bulk deletion)",
                     options=pk_options,
                     key=f"del_sel_{db_table}",
                 )
                 st.caption(
                     "⚠️ Deletion is permanent. For Equipment rows, "
                     "the matching sqm_progress record is also removed.")
-                del_submit = st.form_submit_button("🗑️ Delete Selected Row")
+                del_submit = st.form_submit_button("🗑️ Delete Selected Rows")
 
-            if del_submit and del_id is not None:
-                try:
-                    conn = get_db(); cur = conn.cursor()
-                    cur.execute(f'DELETE FROM {db_table} WHERE "{pk_col}" = ?',
-                                (pk_cast(del_id),))
-                    if db_table == "equipment":
-                        _match = view_df[view_df[pk_col] == del_id]
-                        if not _match.empty:
-                            _er = _match.iloc[0]
+            if del_submit:
+                if not del_ids:
+                    st.error("Please select at least one row to delete.")
+                else:
+                    try:
+                        conn = get_db(); cur = conn.cursor()
+                        n_deleted = 0
+                        for _del_id in del_ids:
+                            # Equipment cascade: fetch tag + code BEFORE deleting the parent row
+                            if db_table == "equipment":
+                                _match = view_df[view_df[pk_col] == _del_id]
+                                if not _match.empty:
+                                    _er = _match.iloc[0]
+                                    cur.execute(
+                                        "DELETE FROM sqm_progress "
+                                        "WHERE equipment_tag = ? AND lining_system_code = ?",
+                                        (_er["equipment_tag"], _er["lining_system_code"]))
                             cur.execute(
-                                "DELETE FROM sqm_progress "
-                                "WHERE equipment_tag = ? AND lining_system_code = ?",
-                                (_er["equipment_tag"], _er["lining_system_code"]),
-                            )
-                    conn.commit(); conn.close()
-                    st.cache_data.clear()
-                    st.success(f"✅ Row `{del_id}` deleted from `{db_table}`.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Database error: {e}")
+                                f'DELETE FROM {db_table} WHERE "{pk_col}" = ?',
+                                (pk_cast(_del_id),))
+                            n_deleted += 1
+                        conn.commit(); conn.close()
+                        st.cache_data.clear()
+                        st.success(f"✅ {n_deleted} row(s) deleted from `{db_table}`.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Database error: {e}")
         else:
             st.warning(f"Primary key column `{pk_col}` not found in table.")
