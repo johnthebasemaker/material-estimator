@@ -2,7 +2,8 @@
 Smart Material Estimator · app.py (v3)
 Run: streamlit run app.py
 """
-import io, os, sys, sqlite3
+import io, os, sys, sqlite3, base64
+from PIL import Image as _PILImage
 from datetime import date, datetime
 import pandas as pd
 import numpy as np
@@ -25,6 +26,14 @@ PATH_C   = os.path.join(BASE_DIR, "Equipment.xlsx")
 SHEET_A, SHEET_B, SHEET_C = "Materials", "LINING SYSTEM MATERIAL CONSM", "Data Input"
 LOCATION_ORDER = ["Brown Field", "TRAIN J", "TRAIN K"]
 DB_PATH = os.path.join(BASE_DIR, "sme_database.db")
+LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
+
+@st.cache_data(show_spinner=False)
+def _logo_b64() -> str:
+    if os.path.exists(LOGO_PATH):
+        with open(LOGO_PATH, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    return ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STYLES
@@ -128,26 +137,38 @@ hr{border-color:var(--border)!important;margin:.8rem 0!important;}
 .card-amber{border-left:4px solid var(--amber);}
 .card-green{border-left:4px solid var(--green);}
 .card-blue {border-left:4px solid var(--blue);}
-.loc-badge{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:.62rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;padding:.18rem .6rem;border-radius:3px;}
+.loc-badge{display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap!important;font-family:'JetBrains Mono',monospace;font-size:.62rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;padding:.18rem .6rem;border-radius:3px;}
 .loc-bf{background:rgba(59,130,246,.12);color:var(--blue);}
 .loc-tj{background:rgba(245,158,11,.12);color:var(--amber);}
 .loc-tk{background:rgba(16,185,129,.12);color:var(--green);}
-.pill{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:.68rem;font-weight:600;padding:.15rem .5rem;border-radius:20px;}
+.pill{display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap!important;font-family:'JetBrains Mono',monospace;font-size:.68rem;font-weight:600;padding:.15rem .5rem;border-radius:20px;}
 .pill-g{background:var(--green-bg);color:var(--green);}
 .pill-y{background:var(--yellow-bg);color:var(--yellow);}
 .pill-o{background:var(--orange-bg);color:var(--orange);}
 .pill-r{background:var(--red-bg);color:var(--red);}
-.tag-chip{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:.7rem;background:var(--bg3);color:var(--amber);border:1px solid var(--border2);border-radius:4px;padding:.15rem .5rem;margin:.12rem;}
+.tag-chip{display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap!important;font-family:'JetBrains Mono',monospace;font-size:.7rem;background:var(--bg3);color:var(--amber);border:1px solid var(--border2);border-radius:4px;padding:.15rem .5rem;margin:.12rem;}
 .syscode-block{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:.7rem .9rem;margin:.35rem 0;}
-.syscode-hdr{display:flex;align-items:center;gap:.7rem;margin-bottom:.5rem;}
-.code-badge{font-family:'JetBrains Mono',monospace;font-size:.68rem;font-weight:700;background:var(--bg4);color:var(--amber);border:1px solid var(--amber-bg);border-radius:4px;padding:.2rem .55rem;}
-.session-equip{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.9rem 1rem;margin-bottom:.5rem;}
+.syscode-hdr{display:flex;align-items:center;gap:.7rem;margin-bottom:.5rem;flex-wrap:nowrap;overflow-x:auto;}
+.code-badge{display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap!important;font-family:'JetBrains Mono',monospace;font-size:.68rem;font-weight:700;background:var(--bg4);color:var(--amber);border:1px solid var(--amber-bg);border-radius:4px;padding:.2rem .55rem;}
+.session-equip{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.9rem 1rem;margin-bottom:.5rem;overflow:hidden;}
 .drag-handle{font-size:1rem;color:var(--t5);cursor:grab;user-select:none;padding:.2rem .4rem;}
 .grand-box{background:linear-gradient(135deg, var(--amber-bg) 0%, var(--bg2) 70%);border:1px solid var(--border2);border-left:4px solid var(--amber);border-radius:8px;padding:1.1rem 1.4rem;}
 .status-dot-g::before{content:"●";color:var(--green);margin-right:.4rem;}
 .status-dot-o::before{content:"●";color:var(--orange);margin-right:.4rem;}
 .status-dot-y::before{content:"●";color:var(--yellow);margin-right:.4rem;}
 .status-dot-r::before{content:"●";color:var(--red);margin-right:.4rem;}
+/* ── Mobile Responsiveness ── */
+@media (max-width: 768px) {
+    .sticky-header-wrap{position:relative!important;padding:.5rem .6rem .3rem!important;}
+    [data-testid="stTabs"] > div:first-of-type{position:relative!important;top:0!important;}
+    .main .block-container{padding:.4rem .5rem 2rem!important;}
+    [data-testid="stMetricValue"]{font-size:1.2rem!important;}
+    [data-testid="stMetricLabel"]{font-size:.55rem!important;}
+    .syscode-hdr{flex-wrap:wrap!important;overflow-x:visible!important;gap:.4rem!important;}
+    .card{padding:.6rem .8rem!important;}
+    .code-badge{font-size:.6rem!important;}
+    .loc-badge{font-size:.56rem!important;}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -158,13 +179,17 @@ _ADMIN_USER = "admin"
 _ADMIN_PASS = "admin2026"
 
 def _show_login():
+    _, _logo_col, _ = st.columns([1, 1, 1])
+    with _logo_col:
+        if os.path.exists(LOGO_PATH):
+            st.image(LOGO_PATH, width=200)
     st.markdown("""
     <div style="display:flex;justify-content:center;align-items:center;
-                min-height:60vh;flex-direction:column;gap:1rem;">
+                flex-direction:column;gap:.6rem;margin-bottom:1rem;">
       <div style="font-family:'JetBrains Mono',monospace;font-size:1.6rem;
-                  font-weight:700;color:var(--t0);letter-spacing:-.01em;
-                  margin-bottom:.5rem;">🏗 Smart Material Estimator</div>
-      <div style="font-size:.8rem;color:var(--t3);margin-bottom:1.5rem;">
+                  font-weight:700;color:var(--t0);letter-spacing:-.01em;">
+        🏗 Smart Material Estimator</div>
+      <div style="font-size:.8rem;color:var(--t3);">
         Please log in to continue</div>
     </div>""", unsafe_allow_html=True)
     col_l, col_m, col_r = st.columns([1,1,1])
@@ -437,21 +462,24 @@ def sqm_can_do(alloc_df: pd.DataFrame, tag: str, code: str) -> tuple[float, floa
     return round(total_sqm, 2), can, short
 
 
-def excel_bytes(df: pd.DataFrame, report_title: str = "",
-                add_grand_total: bool = False) -> bytes:
+def generate_excel_report(df: pd.DataFrame,
+                          report_title: str = "",
+                          add_grand_total: bool = True) -> bytes:
     """
-    Export df to Excel with:
-    - Row 1: report_title (merged, bold, large font) if provided
-    - Row 2: column headers (bold, background fill)
-    - Rows 3+: data
-    - Last row: GRAND TOTAL (bold, summing numeric columns) if add_grand_total=True
+    Professional Excel export using xlsxwriter:
+    - Rows 0-3: space reserved for logo image (inserted at A1)
+    - Row 4:    report title bar (merged, dark navy, white bold)
+    - Row 5:    column headers  (navy bg, white bold, border)
+    - Row 6+:   data rows       (border)
+    - Last row: GRAND TOTAL     (gold bg, bold) when add_grand_total=True
     """
-    from openpyxl import load_workbook
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
-
     buf = io.BytesIO()
     out_df = df.copy()
+
+    # Drop helper columns that should not appear in exports
+    for _drop in ("☐ Select", "Sl. No."):
+        if _drop in out_df.columns:
+            out_df = out_df.drop(columns=[_drop])
 
     # ── Grand total row ───────────────────────────────────────────────────
     if add_grand_total and len(out_df) > 0:
@@ -465,58 +493,101 @@ def excel_bytes(df: pd.DataFrame, report_title: str = "",
                 pass
         out_df = pd.concat([out_df, pd.DataFrame([total_row])], ignore_index=True)
 
-    # ── Write to buffer ───────────────────────────────────────────────────
-    if report_title:
-        # Write title row first, then data
-        title_df = pd.DataFrame([[report_title]])
-        title_df.to_excel(buf, index=False, header=False, engine="openpyxl", startrow=0)
-        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            title_df.to_excel(w, index=False, header=False, startrow=0)
-            out_df.to_excel(w, index=False, header=True, startrow=1)
+    TITLE_ROW  = 4   # 0-indexed row for the title bar
+    HEADER_ROW = 5   # 0-indexed row for column headers
+    DATA_START = 6   # 0-indexed first data row
+    n_cols = len(out_df.columns)
 
-        buf.seek(0)
-        wb = load_workbook(buf)
-        ws = wb.active
-        n_cols = len(out_df.columns)
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        # Write data at HEADER_ROW so xlsxwriter positions cells correctly;
+        # we will overwrite header row and data rows with formatted versions.
+        out_df.to_excel(writer, index=False, sheet_name="Report",
+                        startrow=HEADER_ROW)
 
-        # Style title row (row 1)
-        ws.merge_cells(start_row=1, start_column=1,
-                       end_row=1, end_column=n_cols)
-        title_cell = ws.cell(1, 1)
-        title_cell.font      = Font(bold=True, size=13, color="FFFFFF")
-        title_cell.fill      = PatternFill("solid", fgColor="1A2A3A")
-        title_cell.alignment = Alignment(horizontal="center", vertical="center")
-        ws.row_dimensions[1].height = 22
+        wb = writer.book
+        ws = writer.sheets["Report"]
 
-        # Style header row (row 2)
-        for col in range(1, n_cols + 1):
-            cell = ws.cell(2, col)
-            cell.font      = Font(bold=True, size=10, color="FFFFFF")
-            cell.fill      = PatternFill("solid", fgColor="2D4A6A")
-            cell.alignment = Alignment(horizontal="center")
+        # ── Formats ───────────────────────────────────────────────────────
+        title_fmt = wb.add_format({
+            "bold": True, "font_size": 13, "font_color": "#FFFFFF",
+            "bg_color": "#1A2A3A", "align": "center", "valign": "vcenter",
+            "border": 0,
+        })
+        header_fmt = wb.add_format({
+            "bold": True, "font_size": 10, "font_color": "#FFFFFF",
+            "bg_color": "#2D4A6A", "align": "center", "valign": "vcenter",
+            "border": 1,
+        })
+        data_fmt = wb.add_format({
+            "font_size": 9, "border": 1, "valign": "vcenter",
+        })
+        total_fmt = wb.add_format({
+            "bold": True, "font_size": 10, "bg_color": "#F0C040",
+            "border": 1, "valign": "vcenter",
+        })
 
-        # Style grand total row (last row)
-        if add_grand_total:
-            last_row = ws.max_row
-            for col in range(1, n_cols + 1):
-                cell = ws.cell(last_row, col)
-                cell.font = Font(bold=True, size=10)
-                cell.fill = PatternFill("solid", fgColor="F0C040")
+        # ── Logo — pre-resized to exactly 121×83 px @ 96 DPI = 1.26"×0.86" ─
+        if os.path.exists(LOGO_PATH):
+            _logo_buf = io.BytesIO()
+            with _PILImage.open(LOGO_PATH) as _img:
+                _img = _img.resize((121, 83), _PILImage.Resampling.LANCZOS)
+                _img.save(_logo_buf, format="PNG", dpi=(96, 96))
+            _logo_buf.seek(0)
+            ws.insert_image(0, 0, "logo.png", {
+                "image_data":      _logo_buf,
+                "x_offset":        4,
+                "y_offset":        4,
+                "object_position": 1,
+            })
+        # 4 rows × 16 pts = 64 pts ≈ 0.889" — just enough to contain the 83 px logo
+        for _r in range(4):
+            ws.set_row(_r, 16)
 
-        # Auto-width columns
-        for col in range(1, n_cols + 1):
-            max_len = max(
-                (len(str(ws.cell(r, col).value or ""))
-                 for r in range(1, ws.max_row + 1)), default=8)
-            ws.column_dimensions[get_column_letter(col)].width = min(max_len + 3, 40)
+        # ── Report metadata — right side of the header area ───────────────
+        if n_cols >= 2:
+            meta_label_fmt = wb.add_format({
+                "font_size": 8, "bold": True, "align": "right",
+                "valign": "vcenter", "font_color": "#555555",
+            })
+            meta_value_fmt = wb.add_format({
+                "font_size": 8, "align": "left",
+                "valign": "vcenter", "font_color": "#333333",
+            })
+            _gen_time = datetime.now().strftime("%Y-%m-%d  %H:%M")
+            ws.write(1, n_cols - 2, "Report Generated:", meta_label_fmt)
+            ws.write(1, n_cols - 1, _gen_time,           meta_value_fmt)
+            ws.write(2, n_cols - 2, "Generated By:",     meta_label_fmt)
+            ws.write(2, n_cols - 1, "Smart Material Estimator", meta_value_fmt)
 
-        out_buf = io.BytesIO()
-        wb.save(out_buf)
-        return out_buf.getvalue()
-    else:
-        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            out_df.to_excel(w, index=False)
-        return buf.getvalue()
+        # ── Title row ─────────────────────────────────────────────────────
+        if report_title and n_cols > 1:
+            ws.merge_range(TITLE_ROW, 0, TITLE_ROW, n_cols - 1,
+                           report_title, title_fmt)
+        elif report_title:
+            ws.write(TITLE_ROW, 0, report_title, title_fmt)
+        ws.set_row(TITLE_ROW, 22)
+
+        # ── Re-write header row with formatting ───────────────────────────
+        for col_i, col_name in enumerate(out_df.columns):
+            ws.write(HEADER_ROW, col_i, col_name, header_fmt)
+        ws.set_row(HEADER_ROW, 18)
+
+        # ── Re-write data rows with formatting ────────────────────────────
+        is_grand_total = add_grand_total and len(out_df) > 0
+        for row_i, row_vals in enumerate(out_df.itertuples(index=False, name=None)):
+            fmt = total_fmt if (is_grand_total and row_i == len(out_df) - 1) else data_fmt
+            for col_i, val in enumerate(row_vals):
+                cell_val = "" if (val is None or (isinstance(val, float) and np.isnan(val))) else val
+                ws.write(DATA_START + row_i, col_i, cell_val, fmt)
+
+        # ── Auto-width columns ────────────────────────────────────────────
+        for col_i, col_name in enumerate(out_df.columns):
+            col_data = out_df.iloc[:, col_i].fillna("").astype(str)
+            max_len  = max(len(str(col_name)),
+                           col_data.str.len().max() if len(col_data) else 0)
+            ws.set_column(col_i, col_i, min(int(max_len) + 3, 42))
+
+    return buf.getvalue()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SUGGESTION ENGINE
@@ -688,7 +759,8 @@ def _eq_label(tag: str) -> str:
 
 
 def plotly_mat_table(df: pd.DataFrame, key_suffix: str, height: int = 380,
-                     show_sqm: bool = False, tag: str = "", code: str = "") -> None:
+                     show_sqm: bool = False, tag: str = "", code: str = "",
+                     allocated_label: str = "Allocated") -> None:
     """Colour-coded material table. If show_sqm=True, adds SQM columns after qty cols."""
     base_cols = ["Material_Code", "Material_Name", "UOM",
                  "Demand_Qty", "Allocated_Qty", "Shortfall_Qty", "Fulfillment_Pct"]
@@ -705,7 +777,7 @@ def plotly_mat_table(df: pd.DataFrame, key_suffix: str, height: int = 380,
         "UOM":            "UOM",
         "Demand_Qty":     "Demand",
         "Ordered_Qty":    "On Order",
-        "Allocated_Qty":  "Allocated",
+        "Allocated_Qty":  allocated_label,
         "Shortfall_Qty":  "Shortfall",
         "Fulfillment_Pct":"Fulfil %",
     }
@@ -736,10 +808,10 @@ def plotly_mat_table(df: pd.DataFrame, key_suffix: str, height: int = 380,
         ).round(1)
 
     fmt = {
-        "Demand":     "{:,.3f}",
-        "Allocated":  "{:,.3f}",
-        "Shortfall":  "{:,.3f}",
-        "Fulfil %":   "{:.1f}%",
+        "Demand":          "{:,.3f}",
+        allocated_label:   "{:,.3f}",
+        "Shortfall":       "{:,.3f}",
+        "Fulfil %":        "{:.1f}%",
     }
     if "On Order" in df2.columns:
         fmt["On Order"] = "{:,.3f}"
@@ -776,8 +848,10 @@ def plotly_mat_table(df: pd.DataFrame, key_suffix: str, height: int = 380,
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=140)
     st.markdown("""
-    <div style="padding:.5rem 0 1.2rem">
+    <div style="padding:.3rem 0 1.2rem">
       <div style="font-family:'JetBrains Mono',monospace;font-size:1rem;
                   font-weight:700;color:#F59E0B;">🏗 SME</div>
       <div style="font-family:'JetBrains Mono',monospace;font-size:.56rem;
@@ -824,12 +898,14 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # STICKY HEADER
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown("""
+_hdr_logo = f'<img src="data:image/png;base64,{_logo_b64()}" style="height:36px;margin-right:.7rem;vertical-align:middle;border-radius:4px;">' if _logo_b64() else ""
+st.markdown(f"""
 <div class="sticky-header-wrap">
-  <div style="display:flex;align-items:baseline;gap:.9rem;margin-bottom:.35rem;">
+  <div style="display:flex;align-items:center;gap:.9rem;margin-bottom:.35rem;">
+    {_hdr_logo}
     <span style="font-family:'JetBrains Mono',monospace;font-size:1.2rem;
                  font-weight:700;color:var(--t0);letter-spacing:-.01em;">
-      🏗 Smart Material Estimator</span>
+      Smart Material Estimator</span>
     <span style="font-size:.72rem;color:var(--t4);letter-spacing:.03em;">
       System-code level · Cascading allocation · Priority-based</span>
   </div>
@@ -840,11 +916,11 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 tab0, tab1, tab2, tab3, tab4, tab_consume, tab5, tab_master = st.tabs([
     "📊  Dashboard",
-    "🔍  Equipment Entry",
+    "🔍  Equipment Entry Selections",
     "📦  Session Order Report",
     "📍  Location Report",
     "⚙️  Execution Plan",
-    "📝  Daily Consumption",
+    "📦  Inventory",
     "📈  Total Overview",
     "🗄️  Master Data",
 ])
@@ -1193,9 +1269,9 @@ with tab0:
             return styles
 
         styled_tbl = tbl_show.style.apply(_style_cov,axis=1).format({
-            "Available":"{:,.2f}","On Order":"{:,.2f}",
-            "Total Demand":"{:,.2f}","Shortfall":"{:,.2f}",
-            "Net Shortfall":"{:,.2f}","Coverage %":"{:.1f}%"})
+            "Available":"{:,.3f}","On Order":"{:,.3f}",
+            "Total Demand":"{:,.3f}","Shortfall":"{:,.3f}",
+            "Net Shortfall":"{:,.3f}","Coverage %":"{:.1f}%"})
         st.dataframe(styled_tbl,use_container_width=True,hide_index=True,
                      height=50+len(tbl_show)*35,key="dash_mat_tbl")
 
@@ -1220,9 +1296,10 @@ with tab0:
         da, db = st.columns(2)
         with da:
             st.download_button("⬇ Download Material Balance",
-                data=excel_bytes(tbl_show.reset_index(drop=True)),
+                data=generate_excel_report(tbl_show.reset_index(drop=True), "Material Balance"),
                 file_name="dashboard_material_balance.xlsx",
-                mime="application/vnd.ms-excel",use_container_width=True)
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True)
 
     # ─────────────────────────────────────────────────────────────────────────
     else:  # 🛒 Material Requirement & Procurement
@@ -1376,17 +1453,18 @@ with tab0:
             return styles
 
         styled_grand = grand_show.style.apply(_style_grand,axis=1).format({
-            "Available":"{:,.2f}","On Order":"{:,.2f}","Demand":"{:,.2f}",
-            "Shortfall":"{:,.2f}","Net Shortfall":"{:,.2f}","Coverage %":"{:.1f}%"})
+            "Available":"{:,.3f}","On Order":"{:,.3f}","Demand":"{:,.3f}",
+            "Shortfall":"{:,.3f}","Net Shortfall":"{:,.3f}","Coverage %":"{:.1f}%"})
         st.dataframe(styled_grand,use_container_width=True,hide_index=True,
                      height=50+len(grand_show)*35,key="proc_grand_tbl")
 
         gc1, gc2 = st.columns(2)
         with gc1:
             st.download_button("⬇ Download Grand Procurement Table",
-                data=excel_bytes(grand_show.reset_index(drop=True)),
+                data=generate_excel_report(grand_show.reset_index(drop=True), "Grand Procurement Table"),
                 file_name="procurement_grand_total.xlsx",
-                mime="application/vnd.ms-excel",use_container_width=True)
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True)
         with gc2:
             shortage_net = grand[grand["Net_Shortfall"]>0][
                 ["Material_Code","Material_Name","UOM","Available_Qty","Ordered_Qty",
@@ -1395,9 +1473,10 @@ with tab0:
                                     "Demand","Shortfall","NET TO ORDER"]
             if not shortage_net.empty:
                 st.download_button("⬇ Net Order List Only",
-                    data=excel_bytes(shortage_net.reset_index(drop=True)),
+                    data=generate_excel_report(shortage_net.reset_index(drop=True), "Net Order List"),
                     file_name="net_order_list.xlsx",
-                    mime="application/vnd.ms-excel",use_container_width=True)
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 · EQUIPMENT ENTRY
@@ -1803,10 +1882,11 @@ with tab2:
                         unsafe_allow_html=True)
 
                     sc1,sc2,sc3,sc4 = st.columns(4)
-                    sc1.metric("Demand",    f"{c_demand:,.2f}")
-                    sc2.metric("Allocated", f"{c_alloc:,.2f}")
-                    sc3.metric("Shortfall", f"{c_short:,.2f}")
-                    sc4.metric("SQM Deficit", f"{c_short_sqm:,.2f}")
+                    sc1.metric("Demand",    f"{c_demand:,.3f}")
+                    sc2.metric("Allocated", f"{c_alloc:,.3f}")
+                    if c_short > 0.001:
+                        sc3.metric("Shortfall", f"{c_short:,.3f}")
+                        sc4.metric("SQM Deficit", f"{c_short_sqm:,.2f}")
                     plotly_mat_table(
                         code_alloc,
                         f"rep_{tag}_{code}",
@@ -1823,13 +1903,14 @@ with tab2:
                     f'<span style="color:#F59E0B;font-weight:700;">GRAND TOTAL — {tag}</span>'
                     f'<span style="color:var(--t3);margin-left:1.5rem;">'
                     f'Demand: <strong style="color:var(--t1);">'
-                    f'{tag_alloc["Demand_Qty"].sum():,.2f}</strong></span>'
+                    f'{tag_alloc["Demand_Qty"].sum():,.3f}</strong></span>'
                     f'<span style="color:var(--t3);margin-left:1rem;">'
                     f'Allocated: <strong style="color:var(--t1);">'
-                    f'{tag_alloc["Allocated_Qty"].sum():,.2f}</strong></span>'
-                    f'<span style="color:var(--t3);margin-left:1rem;">'
+                    f'{tag_alloc["Allocated_Qty"].sum():,.3f}</strong></span>'
+                    + (f'<span style="color:var(--t3);margin-left:1rem;">'
                     f'Shortfall: <strong style="color:#EF4444;">'
-                    f'{tag_alloc["Shortfall_Qty"].sum():,.2f}</strong></span>'
+                    f'{tag_alloc["Shortfall_Qty"].sum():,.3f}</strong></span>'
+                    if tag_alloc["Shortfall_Qty"].sum() > 0.001 else "") +
                     f'<span style="margin-left:1rem;">{fulfil_pill(t_pct)}</span>'
                     f'</div>',
                     unsafe_allow_html=True)
@@ -1942,16 +2023,16 @@ with tab2:
         d1, d2 = st.columns(2)
         with d1:
             st.download_button("⬇ Full Session Report",
-                               data=excel_bytes(alloc_df),
+                               data=generate_excel_report(alloc_df, "Session Full Report"),
                                file_name="session_full_report.xlsx",
-                               mime="application/vnd.ms-excel",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                use_container_width=True)
         with d2:
             if not shortage_only.empty:
                 st.download_button("⬇ Order List Only",
-                                   data=excel_bytes(shortage_only),
+                                   data=generate_excel_report(shortage_only, "Order List"),
                                    file_name="order_list.xlsx",
-                                   mime="application/vnd.ms-excel",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True)
 
 
@@ -2061,7 +2142,7 @@ with tab3:
             eq_row    = eq_master[eq_master["Equipment_Tag_No."]==tag].iloc[0]
             dot       = status_dot(t_pct)
 
-            _dot_char  = "🟢" if t_pct>=100 else "🟠" if t_pct>=90 else "🟡" if t_pct>=80 else "🔴"
+            _dot_char  = "✅" if t_pct>=100 else "🟠" if t_pct>=90 else "🟡" if t_pct>=80 else "🔴"
             _t3_sqm    = sqm_ref[sqm_ref["Equipment_Tag_No."]==tag]["Total_SQM"].sum()
             _t3_cansqm = round(_t3_sqm * min(1.0, t_pct/100), 2)
             _t3_type   = str(eq_row.get("Type","") or "").strip()
@@ -2078,6 +2159,13 @@ with tab3:
                 c3.markdown(f'**Material Spec.:** {eq_row["Material_Spec"] or "—"}')
                 st.caption(
                     f'**Lining:** {str(eq_row["Lining_Systems"]).replace(chr(10)," | ")}')
+                if t_pct >= 100:
+                    st.markdown(
+                        '<div style="background:var(--green-bg);border:1px solid var(--green);'
+                        'border-radius:6px;padding:.5rem .9rem;margin-bottom:.5rem;'
+                        'font-family:\'JetBrains Mono\',monospace;font-size:.78rem;color:var(--green);">'
+                        '✅ All materials fully covered — ready to proceed</div>',
+                        unsafe_allow_html=True)
                 st.markdown("---")
 
                 # Per system code
@@ -2106,7 +2194,8 @@ with tab3:
                         code_alloc,
                         f"loc_{loc}_{tag}_{code}",
                         height=65 + len(code_alloc)*30,
-                        show_sqm=True, tag=tag, code=code
+                        show_sqm=True, tag=tag, code=code,
+                        allocated_label="Available"
                     )
 
                 # Equipment grand total
@@ -2118,10 +2207,11 @@ with tab3:
                     f'<span style="color:#F59E0B;font-weight:700;">TOTAL — {tag}</span>'
                     f'<span style="color:var(--t3);margin-left:1.2rem;">'
                     f'Demand: <b style="color:var(--t1);">'
-                    f'{tag_alloc["Demand_Qty"].sum():,.2f}</b></span>'
-                    f'<span style="color:var(--t3);margin-left:.8rem;">'
+                    f'{tag_alloc["Demand_Qty"].sum():,.3f}</b></span>'
+                    + (f'<span style="color:var(--t3);margin-left:.8rem;">'
                     f'Shortfall: <b style="color:#EF4444;">'
-                    f'{tag_alloc["Shortfall_Qty"].sum():,.2f}</b></span>'
+                    f'{tag_alloc["Shortfall_Qty"].sum():,.3f}</b></span>'
+                    if tag_alloc["Shortfall_Qty"].sum() > 0.001 else "") +
                     f'<span style="margin-left:.8rem;">{fulfil_pill(t_pct)}</span>'
                     f'</div>',
                     unsafe_allow_html=True)
@@ -2224,9 +2314,9 @@ with tab3:
         _export_df = _loc_report[[c for c in _export_cols if c in _loc_report.columns]]
         _dl_col.download_button(
             label=f"⬇ {_loc_dl}",
-            data=excel_bytes(_export_df),
+            data=generate_excel_report(_export_df, f"Location Report – {_loc_dl}"),
             file_name=f"location_report_{_loc_dl.replace(' ', '_')}.xlsx",
-            mime="application/vnd.ms-excel",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
             key=f"dl_loc_{_loc_dl}",
         )
@@ -2346,7 +2436,7 @@ with tab4:
                 + (
                     "✅ All materials for this system code are fully covered."
                     if crit_short == 0 else
-                    f'⚠️ <strong style="color:#EF4444;">{crit_short:,.2f} units</strong>'
+                    f'⚠️ <strong style="color:#EF4444;">{crit_short:,.3f} units</strong>'
                     f' short across {(crit["Shortfall_Qty"]>0).sum()} material(s) — order these first to proceed.'
                 ) +
                 f'</div></div>',
@@ -2444,14 +2534,14 @@ with tab4:
                 {crit_pct:.1f}%</strong> coverage.
                 {"All critical materials are secured — proceed to other system codes." if crit_pct>=100
                   else f"Order {len(crit_short_df)} critical material(s) totalling "
-                       f"<strong style='color:#EF4444;'>{crit_short:,.2f} units</strong> first."}
+                       f"<strong style='color:#EF4444;'>{crit_short:,.3f} units</strong> first."}
                 {"" if other_short==0 else
                   f" Additionally, other system codes require "
-                  f"<strong style='color:#F59E0B;'>{other_short:,.2f} units</strong>"
+                  f"<strong style='color:#F59E0B;'>{other_short:,.3f} units</strong>"
                   f" across {len(all_short_df[~all_short_df['Lining_System_Code'].isin([sel_code])])} material(s)."}
                 <br>
                 <strong style="color:var(--t0);">
-                Total to order for full completion: {total_to_order:,.2f} units
+                Total to order for full completion: {total_to_order:,.3f} units
                 across {len(all_short_df)} material(s).</strong>
               </div>
             </div>""", unsafe_allow_html=True)
@@ -2460,14 +2550,16 @@ with tab4:
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.download_button(
                     f"⬇ Download Execution Order List — {sel_tag}",
-                    data=excel_bytes(all_short_df[
-                        ["Lining_System_Code","Lining_System_Short_Name",
-                         "Material_Code","Material_Name","UOM",
-                         "Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_Pct"]
-                    ].sort_values(["Lining_System_Code","Shortfall_Qty"],
-                                  ascending=[True,False])),
+                    data=generate_excel_report(
+                        all_short_df[
+                            ["Lining_System_Code","Lining_System_Short_Name",
+                             "Material_Code","Material_Name","UOM",
+                             "Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_Pct"]
+                        ].sort_values(["Lining_System_Code","Shortfall_Qty"],
+                                      ascending=[True,False]),
+                        f"Execution Plan – {sel_tag}"),
                     file_name=f"execution_plan_{sel_tag.replace('/','-')}.xlsx",
-                    mime="application/vnd.ms-excel",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
 
@@ -2475,355 +2567,591 @@ with tab4:
 # TAB: DAILY CONSUMPTION ENTRY
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_consume:
-    st.markdown('<div class="sec-hdr">📝 Daily Consumption Entry — Record actual site production</div>',
+    st.markdown('<div class="sec-hdr">📦 Inventory — Consumption & Receipts</div>',
                 unsafe_allow_html=True)
 
     if not db_available():
         st.error("Database not found. Run `python setup_db.py` first to initialise the database.")
         st.stop()
 
-    # ── Cascading dropdowns: Location → Type → Equipment → System Code ────────
-    st.markdown('<div class="sec-hdr">Step 1 — Select Work Location & Equipment</div>',
-                unsafe_allow_html=True)
-    col1, col2, col3, col4 = st.columns(4)
+    inv_mode = st.radio(
+        "Mode", ["📅 Consumption", "📦 Receipts"],
+        horizontal=True, key="inv_mode", label_visibility="collapsed")
+    st.markdown("<hr>", unsafe_allow_html=True)
 
-    with col1:
-        ce_loc = st.selectbox("📍 Location", options=[""] + LOCATION_ORDER,
-                              key="ce_loc", label_visibility="visible")
-    with col2:
-        if ce_loc:
-            type_opts = sorted(
-                eq_master[eq_master["Location"]==ce_loc]["Type"].dropna().unique().tolist())
-        else:
-            type_opts = sorted(eq_master["Type"].dropna().unique().tolist())
-        ce_type = st.selectbox("🏷 Type", options=[""] + type_opts,
-                               key="ce_type", label_visibility="visible")
-    with col3:
-        eq_filter = eq_master.copy()
-        if ce_loc:  eq_filter = eq_filter[eq_filter["Location"]==ce_loc]
-        if ce_type: eq_filter = eq_filter[eq_filter["Type"]==ce_type]
-        tag_opts = sorted(eq_filter["Equipment_Tag_No."].tolist())
-        ce_tag = st.selectbox("🔩 Equipment Tag", options=[""] + tag_opts,
-                              format_func=lambda t: "" if t=="" else _eq_label(t),
-                              key="ce_tag", label_visibility="visible")
-    with col4:
-        if ce_tag:
-            code_opts = sorted(
-                equip_sc[equip_sc["Equipment_Tag_No."]==ce_tag]["Lining_System_Code"].unique(),
-                key=lambda x: int(x))
-            code_labels = [
-                f"Code {c}  –  {equip_sc[(equip_sc['Equipment_Tag_No.']==ce_tag)&(equip_sc['Lining_System_Code']==c)]['Lining_System_Short_Name'].iloc[0]}"
-                for c in code_opts]
-        else:
-            code_opts, code_labels = [], []
-        ce_code_raw = st.selectbox("⚙️ System Code", options=[""] + code_labels,
-                                   key="ce_code", label_visibility="visible")
-        ce_code = ce_code_raw.split("  –  ")[0].replace("Code ","").strip() if ce_code_raw else ""
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CONSUMPTION MODE
+    # ═══════════════════════════════════════════════════════════════════════════
+    if inv_mode == "📅 Consumption":
 
-    # ── SQM Entry ──────────────────────────────────────────────────────────────
-    if ce_tag and ce_code:
-        st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown('<div class="sec-hdr">Step 2 — Enter SQM Completed Today</div>',
+        # ── Cascading dropdowns: Location → Type → Equipment → System Code ───
+        st.markdown('<div class="sec-hdr">Step 1 — Select Work Location & Equipment</div>',
                     unsafe_allow_html=True)
+        col1, col2, col3, col4 = st.columns(4)
 
-        # Get remaining SQM for this (tag, code)
-        sqm_row = sqm_ref[
-            (sqm_ref["Equipment_Tag_No."]==ce_tag) &
-            (sqm_ref["Lining_System_Code"]==ce_code)]
-        total_sqm_orig  = float(sqm_row["Total_SQM_Original"].iloc[0]) if not sqm_row.empty else 0
-        done_sqm_prev   = float(sqm_row["done_sqm"].iloc[0]) if not sqm_row.empty else 0
-        remaining_sqm   = max(0.0, total_sqm_orig - done_sqm_prev)
-        sname           = (equip_sc[(equip_sc["Equipment_Tag_No."]==ce_tag) &
-                                    (equip_sc["Lining_System_Code"]==ce_code)]
-                           ["Lining_System_Short_Name"].iloc[0]
-                           if not sqm_row.empty else ce_code)
+        with col1:
+            ce_loc = st.selectbox("📍 Location", options=[""] + LOCATION_ORDER,
+                                  key="ce_loc", label_visibility="visible")
+        with col2:
+            if ce_loc:
+                type_opts = sorted(
+                    eq_master[eq_master["Location"]==ce_loc]["Type"].dropna().unique().tolist())
+            else:
+                type_opts = sorted(eq_master["Type"].dropna().unique().tolist())
+            ce_type = st.selectbox("🏷 Type", options=[""] + type_opts,
+                                   key="ce_type", label_visibility="visible")
+        with col3:
+            eq_filter = eq_master.copy()
+            if ce_loc:  eq_filter = eq_filter[eq_filter["Location"]==ce_loc]
+            if ce_type: eq_filter = eq_filter[eq_filter["Type"]==ce_type]
+            tag_opts = sorted(eq_filter["Equipment_Tag_No."].tolist())
+            ce_tag = st.selectbox("🔩 Equipment Tag", options=[""] + tag_opts,
+                                  format_func=lambda t: "" if t=="" else _eq_label(t),
+                                  key="ce_tag", label_visibility="visible")
+        with col4:
+            if ce_tag:
+                code_opts = sorted(
+                    equip_sc[equip_sc["Equipment_Tag_No."]==ce_tag]["Lining_System_Code"].unique(),
+                    key=lambda x: int(x))
+                code_labels = [
+                    f"Code {c}  –  {equip_sc[(equip_sc['Equipment_Tag_No.']==ce_tag)&(equip_sc['Lining_System_Code']==c)]['Lining_System_Short_Name'].iloc[0]}"
+                    for c in code_opts]
+            else:
+                code_opts, code_labels = [], []
+            ce_code_raw = st.selectbox("⚙️ System Code", options=[""] + code_labels,
+                                       key="ce_code", label_visibility="visible")
+            ce_code = ce_code_raw.split("  –  ")[0].replace("Code ","").strip() if ce_code_raw else ""
 
-        sc1,sc2,sc3,sc4 = st.columns(4)
-        sc1.metric("System Code",       sname)
-        sc2.metric("Original SQM",      f"{total_sqm_orig:,.2f}")
-        sc3.metric("Already Done SQM",  f"{done_sqm_prev:,.2f}")
-        sc4.metric("Remaining SQM",     f"{remaining_sqm:,.2f}",
-                   help="Remaining = Original − already completed")
-
-        # ── Pre-load recipe before form ───────────────────────────────────────
-        sc_recipe = recipe[recipe["Lining_System_Code"]==ce_code].copy()
-        sc_recipe = sc_recipe.merge(
-            inv[["Material_Code","Available_Qty","Ordered_Qty"]],
-            on="Material_Code", how="left")
-        sc_recipe["Available_Qty"] = sc_recipe["Available_Qty"].fillna(0)
-        sc_recipe["Ordered_Qty"]   = sc_recipe["Ordered_Qty"].fillna(0)
-
-        if sc_recipe.empty:
-            st.warning(f"No recipe found for System Code {ce_code}.")
-        else:
+        # ── SQM Entry ─────────────────────────────────────────────────────────
+        if ce_tag and ce_code:
             st.markdown("<hr>", unsafe_allow_html=True)
-            # ── All inputs in one form → no per-keystroke reruns ──────────────
-            with st.form(key="ce_form", clear_on_submit=True):
-                st.markdown('<div class="sec-hdr">Step 2 — Enter SQM Completed Today</div>',
-                            unsafe_allow_html=True)
-                col_date, col_sqm = st.columns(2)
-                with col_date:
-                    ce_date_form = st.date_input("📅 Work Date", value=date.today(),
-                                                 key="form_ce_date")
-                with col_sqm:
-                    ce_sqm_form = st.number_input(
-                        "SQM Completed Today",
-                        min_value=0.0, max_value=float(remaining_sqm),
-                        value=0.0, step=0.5, format="%.2f",
-                        key="form_ce_sqm",
-                        help=f"Maximum {remaining_sqm:,.2f} m² remaining")
+            st.markdown('<div class="sec-hdr">Step 2 — Enter SQM Completed Today</div>',
+                        unsafe_allow_html=True)
 
-                st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">'
-                            'Step 3 — Material Quantities Consumed</div>',
-                            unsafe_allow_html=True)
-                st.caption(
-                    "Actual Consumed defaults to For_1_SQM × SQM if left at 0. "
-                    "Override with actual site usage if different.")
+            sqm_row = sqm_ref[
+                (sqm_ref["Equipment_Tag_No."]==ce_tag) &
+                (sqm_ref["Lining_System_Code"]==ce_code)]
+            total_sqm_orig  = float(sqm_row["Total_SQM_Original"].iloc[0]) if not sqm_row.empty else 0
+            done_sqm_prev   = float(sqm_row["done_sqm"].iloc[0]) if not sqm_row.empty else 0
+            remaining_sqm   = max(0.0, total_sqm_orig - done_sqm_prev)
+            sname           = (equip_sc[(equip_sc["Equipment_Tag_No."]==ce_tag) &
+                                        (equip_sc["Lining_System_Code"]==ce_code)]
+                               ["Lining_System_Short_Name"].iloc[0]
+                               if not sqm_row.empty else ce_code)
 
-                # Table header
-                h1,h2,h3,h4,h5,h6,h7 = st.columns([2,3,1,1.5,1.5,1.5,1.5])
-                for hdr, col in zip(
-                    ["Code","Material Name","UOM","Available",
-                     "For 1 SQM","Actual Consumed","On Order"],
-                    [h1,h2,h3,h4,h5,h6,h7]
-                ):
-                    col.markdown(f"**{hdr}**")
-                st.markdown("---")
+            sc1,sc2,sc3,sc4 = st.columns(4)
+            sc1.metric("System Code",       sname)
+            sc2.metric("Original SQM",      f"{total_sqm_orig:,.2f}")
+            sc3.metric("Already Done SQM",  f"{done_sqm_prev:,.2f}")
+            sc4.metric("Remaining SQM",     f"{remaining_sqm:,.2f}",
+                       help="Remaining = Original − already completed")
 
-                mat_inputs = {}
-                for _, mrow in sc_recipe.iterrows():
-                    mc    = str(mrow["Material_Code"])
-                    for_1 = float(mrow.get("For_1_SQM", 0) or 0)
-                    avail = float(mrow.get("Available_Qty", 0) or 0)
-                    onord = float(mrow.get("Ordered_Qty",  0) or 0)
-                    c1,c2,c3,c4,c5,c6,c7 = st.columns([2,3,1,1.5,1.5,1.5,1.5])
-                    c1.markdown(f"<code>{mc}</code>", unsafe_allow_html=True)
-                    c2.write(str(mrow.get("Material_Name", "")))
-                    c3.write(str(mrow.get("UOM", "")))
-                    c4.write(f"{avail:,.2f}")
-                    c5.write(f"{for_1:,.4f}")
-                    actual = c6.number_input(
-                        "qty", min_value=0.0, value=0.0,
-                        step=0.001, format="%.4f",
-                        key=f"form_mat_{mc}",
-                        label_visibility="collapsed")
-                    c7.write(f"{onord:,.2f}")
-                    mat_inputs[mc] = {
-                        "material_name": str(mrow.get("Material_Name", "")),
-                        "uom":           str(mrow.get("UOM", "")),
-                        "for_1_sqm":     for_1,
-                        "actual_input":  float(actual),
-                    }
+            sc_recipe = recipe[recipe["Lining_System_Code"]==ce_code].copy()
+            sc_recipe = sc_recipe.merge(
+                inv[["Material_Code","Available_Qty","Ordered_Qty"]],
+                on="Material_Code", how="left")
+            sc_recipe["Available_Qty"] = sc_recipe["Available_Qty"].fillna(0)
+            sc_recipe["Ordered_Qty"]   = sc_recipe["Ordered_Qty"].fillna(0)
 
-                ce_notes_form = st.text_area(
-                    "📝 Notes (optional)",
-                    placeholder="Weather conditions, issues, remarks…",
-                    key="form_notes", height=70)
+            if sc_recipe.empty:
+                st.warning(f"No recipe found for System Code {ce_code}.")
+            else:
+                st.markdown("<hr>", unsafe_allow_html=True)
+                with st.form(key="ce_form", clear_on_submit=False):
+                    st.markdown('<div class="sec-hdr">Step 2 — Enter SQM Completed Today</div>',
+                                unsafe_allow_html=True)
+                    col_date, col_sqm = st.columns(2)
+                    with col_date:
+                        ce_date_form = st.date_input("📅 Work Date", value=date.today(),
+                                                     key="form_ce_date")
+                    with col_sqm:
+                        ce_sqm_form = st.number_input(
+                            "SQM Completed Today",
+                            min_value=0.0, max_value=float(remaining_sqm),
+                            value=0.0, step=0.5, format="%.2f",
+                            key="form_ce_sqm",
+                            help=f"Maximum {remaining_sqm:,.2f} m² remaining")
 
-                submit_btn = st.form_submit_button(
-                    "✅  Submit Daily Consumption",
+                    st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">'
+                                'Step 3 — Material Quantities Consumed</div>',
+                                unsafe_allow_html=True)
+                    st.caption(
+                        "Actual Consumed defaults to For_1_SQM × SQM if left at 0. "
+                        "Override with actual site usage if different.")
+
+                    h1,h2,h3,h4,h5,h6,h7 = st.columns([2,3,1,1.5,1.5,1.5,1.5])
+                    for hdr, col in zip(
+                        ["Code","Material Name","UOM","Available",
+                         "For 1 SQM","Actual Consumed","On Order"],
+                        [h1,h2,h3,h4,h5,h6,h7]
+                    ):
+                        col.markdown(f"**{hdr}**")
+                    st.markdown("---")
+
+                    mat_inputs = {}
+                    for _, mrow in sc_recipe.iterrows():
+                        mc    = str(mrow["Material_Code"])
+                        for_1 = float(mrow.get("For_1_SQM", 0) or 0)
+                        avail = float(mrow.get("Available_Qty", 0) or 0)
+                        onord = float(mrow.get("Ordered_Qty",  0) or 0)
+                        c1,c2,c3,c4,c5,c6,c7 = st.columns([2,3,1,1.5,1.5,1.5,1.5])
+                        c1.markdown(f"<code>{mc}</code>", unsafe_allow_html=True)
+                        c2.write(str(mrow.get("Material_Name", "")))
+                        c3.write(str(mrow.get("UOM", "")))
+                        c4.write(f"{avail:,.3f}")
+                        c5.write(f"{for_1:,.3f}")
+                        actual = c6.number_input(
+                            "qty", min_value=0.0, value=0.0,
+                            step=0.001, format="%.3f",
+                            key=f"form_mat_{mc}",
+                            label_visibility="collapsed")
+                        c7.write(f"{onord:,.3f}")
+                        mat_inputs[mc] = {
+                            "material_name": str(mrow.get("Material_Name", "")),
+                            "uom":           str(mrow.get("UOM", "")),
+                            "for_1_sqm":     for_1,
+                            "actual_input":  float(actual),
+                        }
+
+                    ce_notes_form = st.text_area(
+                        "📝 Notes (optional)",
+                        placeholder="Weather conditions, issues, remarks…",
+                        key="form_notes", height=70)
+
+                    submit_btn = st.form_submit_button(
+                        "✅  Submit Consumption",
+                        use_container_width=False)
+
+                # Clear Form button (outside form)
+                if st.button("🧹 Clear Form", key="ce_clr_btn"):
+                    for _k in list(st.session_state.keys()):
+                        if _k.startswith(("form_ce_", "form_mat_", "form_notes")):
+                            del st.session_state[_k]
+                    st.rerun()
+
+                # ── DB write ──────────────────────────────────────────────────
+                if submit_btn:
+                    sqm_val   = st.session_state.get("form_ce_sqm",  0.0)
+                    date_val  = st.session_state.get("form_ce_date", date.today())
+                    notes_val = st.session_state.get("form_notes",   "")
+                    if sqm_val <= 0:
+                        st.error("❌ Enter SQM Completed > 0 before submitting.")
+                    elif sqm_val > remaining_sqm + 0.001:
+                        st.error(f"❌ SQM entered ({sqm_val:.2f} m²) exceeds remaining ({remaining_sqm:.2f} m²). Entry blocked.")
+                    else:
+                        # ── Validate material quantities vs available stock ───
+                        _inv_avail = inv.set_index("Material_Code")["Available_Qty"].to_dict()
+                        _mat_errors = []
+                        for mc, vals in mat_inputs.items():
+                            consumed = (vals["actual_input"] if vals["actual_input"] > 0
+                                        else round(vals["for_1_sqm"] * sqm_val, 4))
+                            avail_val = float(_inv_avail.get(mc, 0.0))
+                            if consumed > avail_val + 0.001:
+                                _mat_errors.append(
+                                    f"❌ {mc} ({vals['material_name']}): "
+                                    f"need {consumed:.3f} but only {avail_val:.3f} available.")
+                        if _mat_errors:
+                            for _me in _mat_errors:
+                                st.error(_me)
+                        else:
+                            try:
+                                conn = get_db()
+                                cur  = conn.cursor()
+                                n_updated = 0
+                                for mc, vals in mat_inputs.items():
+                                    expected_qty = round(vals["for_1_sqm"] * sqm_val, 4)
+                                    consumed_qty = (vals["actual_input"]
+                                                    if vals["actual_input"] > 0
+                                                    else expected_qty)
+                                    cur.execute("""
+                                        INSERT INTO consumption_log
+                                          (entry_date, equipment_tag, lining_system_code,
+                                           lining_system_name, sqm_completed, material_code,
+                                           material_name, uom, expected_qty, consumed_qty, notes)
+                                        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                                    """, (str(date_val), ce_tag, ce_code, sname,
+                                          sqm_val, mc, vals["material_name"], vals["uom"],
+                                          expected_qty, consumed_qty, notes_val))
+                                    if consumed_qty > 0:
+                                        cur.execute("""
+                                            UPDATE inventory
+                                            SET available_qty = MAX(0, available_qty - ?)
+                                            WHERE material_code = ?
+                                        """, (consumed_qty, mc))
+                                        n_updated += 1
+                                cur.execute("""
+                                    UPDATE sqm_progress
+                                    SET done_sqm = done_sqm + ?
+                                    WHERE equipment_tag = ? AND lining_system_code = ?
+                                """, (sqm_val, ce_tag, ce_code))
+                                conn.commit()
+                                conn.close()
+                                st.cache_data.clear()
+                                st.success(
+                                    f"✅ {sqm_val:.2f} SQM recorded for {ce_tag} · "
+                                    f"Code {ce_code} ({sname}).  "
+                                    f"{n_updated} material(s) deducted from inventory.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Database error: {e}")
+
+        # ── Consumption History ───────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("📜 View & Edit Consumption History", expanded=False):
+            conn = get_db()
+            _log_raw = pd.read_sql("""
+                SELECT id,
+                       entry_date AS Date,
+                       equipment_tag AS Equipment,
+                       lining_system_code AS Code,
+                       lining_system_name AS System,
+                       sqm_completed AS "SQM Done",
+                       material_code AS Material,
+                       material_name AS "Material Name",
+                       uom AS UOM,
+                       expected_qty AS "Expected Qty",
+                       consumed_qty AS "Consumed Qty",
+                       notes AS Notes,
+                       submitted_at AS "Submitted At"
+                FROM consumption_log
+                ORDER BY submitted_at DESC
+                LIMIT 200
+            """, conn)
+            conn.close()
+
+            if _log_raw.empty:
+                st.info("No consumption entries yet.")
+            else:
+                fh1, fh2 = st.columns(2)
+                with fh1:
+                    log_tags = ["All"] + sorted(_log_raw["Equipment"].unique().tolist())
+                    fh_tag   = st.selectbox("Filter by Equipment", log_tags, key="log_tag")
+                with fh2:
+                    log_dates = ["All"] + sorted(_log_raw["Date"].unique().tolist(), reverse=True)
+                    fh_date   = st.selectbox("Filter by Date", log_dates, key="log_date")
+
+                df_show = _log_raw.copy()
+                if fh_tag  != "All": df_show = df_show[df_show["Equipment"]==fh_tag]
+                if fh_date != "All": df_show = df_show[df_show["Date"]==fh_date]
+                df_show = df_show.reset_index(drop=True)
+
+                # Build editable grid
+                _clog_display = df_show.copy()
+                _clog_display.insert(0, "Sl. No.", range(1, len(_clog_display)+1))
+                _clog_display.insert(1, "☐ Select", False)
+
+                st.data_editor(
+                    _clog_display,
+                    key="cons_log_editor",
+                    num_rows="fixed",
+                    hide_index=True,
+                    use_container_width=True,
+                    height=min(600, 50 + len(_clog_display) * 35),
+                    column_config={
+                        "id":           st.column_config.NumberColumn("ID", disabled=True),
+                        "Sl. No.":      st.column_config.NumberColumn("Sl. No.", disabled=True),
+                        "☐ Select":     st.column_config.CheckboxColumn("☐", default=False),
+                        "Date":         st.column_config.TextColumn("Date", disabled=True),
+                        "Equipment":    st.column_config.TextColumn("Equipment", disabled=True),
+                        "Code":         st.column_config.TextColumn("Code", disabled=True),
+                        "Submitted At": st.column_config.TextColumn("Submitted At", disabled=True),
+                    },
+                )
+
+                _cb1, _cb2, _cb3 = st.columns([2, 2, 4])
+                with _cb1:
+                    if st.button("💾 Save Cell Edits", key="cons_log_save"):
+                        _estate = st.session_state.get("cons_log_editor", {})
+                        _edits  = _estate.get("edited_rows", {})
+                        _skip   = {"Sl. No.", "☐ Select", "id", "Date", "Equipment",
+                                   "Code", "Submitted At"}
+                        _saved  = 0
+                        try:
+                            conn = get_db(); cur = conn.cursor()
+                            for _ridx, _changes in _edits.items():
+                                _safe = {k: v for k, v in _changes.items() if k not in _skip}
+                                if not _safe:
+                                    continue
+                                _pk = int(df_show.iloc[int(_ridx)]["id"])
+                                _set_sql = ", ".join([f'"{k}" = ?' for k in _safe])
+                                # Map display column names back to DB column names
+                                _col_map = {
+                                    "System": "lining_system_name",
+                                    "SQM Done": "sqm_completed",
+                                    "Material": "material_code",
+                                    "Material Name": "material_name",
+                                    "UOM": "uom",
+                                    "Expected Qty": "expected_qty",
+                                    "Consumed Qty": "consumed_qty",
+                                    "Notes": "notes",
+                                }
+                                _db_safe = {_col_map.get(k, k): v for k, v in _safe.items()}
+                                _set_sql = ", ".join([f'"{k}" = ?' for k in _db_safe])
+                                cur.execute(
+                                    f"UPDATE consumption_log SET {_set_sql} WHERE id = ?",
+                                    list(_db_safe.values()) + [_pk])
+                                _saved += 1
+                            conn.commit(); conn.close()
+                            st.cache_data.clear()
+                            st.success(f"✅ {_saved} row(s) updated.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error(f"❌ Database error: {_e}")
+
+                with _cb2:
+                    if st.button("🗑️ Delete Selected", key="cons_log_del"):
+                        _estate   = st.session_state.get("cons_log_editor", {})
+                        _edits    = _estate.get("edited_rows", {})
+                        _del_idxs = [int(i) for i, ch in _edits.items()
+                                     if ch.get("☐ Select", False)]
+                        if not _del_idxs:
+                            st.warning("Check the ☐ column on rows you want to delete first.")
+                        else:
+                            try:
+                                conn = get_db(); cur = conn.cursor()
+                                for _di in _del_idxs:
+                                    _pk = int(df_show.iloc[_di]["id"])
+                                    cur.execute("DELETE FROM consumption_log WHERE id = ?", (_pk,))
+                                conn.commit(); conn.close()
+                                st.cache_data.clear()
+                                st.success(f"✅ {len(_del_idxs)} row(s) deleted.")
+                                st.rerun()
+                            except Exception as _e:
+                                st.error(f"❌ Database error: {_e}")
+
+                st.download_button(
+                    "⬇ Download Consumption Log",
+                    data=generate_excel_report(
+                        df_show.drop(columns=["id"], errors="ignore"),
+                        "Daily Consumption Log"),
+                    file_name=f"consumption_log_{date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=False)
 
-            # ── DB write — runs once on submit, not on every keypress ─────────
-            if submit_btn:
-                sqm_val  = st.session_state.get("form_ce_sqm",  0.0)
-                date_val = st.session_state.get("form_ce_date", date.today())
-                notes_val= st.session_state.get("form_notes",   "")
-                if sqm_val <= 0:
-                    st.error("Enter SQM Completed > 0 before submitting.")
-                elif sqm_val > remaining_sqm + 0.001:
-                    st.error(f"SQM ({sqm_val:.2f}) exceeds remaining ({remaining_sqm:.2f}).")
-                else:
-                    try:
-                        conn = get_db()
-                        cur  = conn.cursor()
-                        n_updated = 0
-                        for mc, vals in mat_inputs.items():
-                            # Auto-calc expected; use actual override if > 0
-                            expected_qty  = round(vals["for_1_sqm"] * sqm_val, 4)
-                            consumed_qty  = (vals["actual_input"]
-                                             if vals["actual_input"] > 0
-                                             else expected_qty)
-                            cur.execute("""
-                                INSERT INTO consumption_log
-                                  (entry_date, equipment_tag, lining_system_code,
-                                   lining_system_name, sqm_completed, material_code,
-                                   material_name, uom, expected_qty, consumed_qty, notes)
-                                VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                            """, (str(date_val), ce_tag, ce_code, sname,
-                                  sqm_val, mc, vals["material_name"], vals["uom"],
-                                  expected_qty, consumed_qty, notes_val))
-                            if consumed_qty > 0:
-                                cur.execute("""
-                                    UPDATE inventory
-                                    SET available_qty = MAX(0, available_qty - ?)
-                                    WHERE material_code = ?
-                                """, (consumed_qty, mc))
-                                n_updated += 1
-                        # Update SQM progress — deduct done_sqm from remaining
-                        cur.execute("""
-                            UPDATE sqm_progress
-                            SET done_sqm = done_sqm + ?
-                            WHERE equipment_tag = ? AND lining_system_code = ?
-                        """, (sqm_val, ce_tag, ce_code))
-                        conn.commit()
-                        conn.close()
-                        # Clear cache so Dashboard / Location / Total Overview refresh
-                        st.cache_data.clear()
-                        st.success(
-                            f"✅ {sqm_val:.2f} SQM recorded for {ce_tag} · "
-                            f"Code {ce_code} ({sname}).  "
-                            f"{n_updated} material(s) deducted from inventory.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Database error: {e}")
+    # ═══════════════════════════════════════════════════════════════════════════
+    # RECEIPTS MODE
+    # ═══════════════════════════════════════════════════════════════════════════
+    else:
+        st.markdown('<div class="sec-hdr">📦 Record Material Receipt — New Stock Received</div>',
+                    unsafe_allow_html=True)
+        st.caption("Log when new materials arrive on site. "
+                   "Available Qty increases by the received amount; Ordered Qty decreases accordingly.")
 
-    # ── Receipt Log ──────────────────────────────────────────────────────────
-    st.markdown("<br>", unsafe_allow_html=True)
-    with st.expander("📦 Record Material Receipt (New Stock Received)", expanded=False):
-        st.caption("Use this to log when new materials arrive on site. "
-                   "Received quantities will be added to Available Inventory.")
-        if db_available():
-            with st.form(key="receipt_form", clear_on_submit=True):
-                rc1, rc2, rc3, rc4 = st.columns(4)
-                with rc1:
-                    rc_date = st.date_input("📅 Receipt Date", value=date.today(),
-                                            key="rc_date")
-                with rc2:
-                    mat_opts_r = inv["Material_Code"].tolist()
-                    rc_mat = st.selectbox(
-                        "🧪 Material",
-                        options=mat_opts_r,
-                        format_func=lambda m: f"{m}  –  "
-                            f"{inv.set_index('Material_Code')['Material_Name'].get(m,m)[:30]}",
-                        key="rc_mat")
-                with rc3:
-                    rc_qty = st.number_input("Qty Received", min_value=0.0,
-                                             value=0.0, step=1.0, format="%.2f",
-                                             key="rc_qty")
-                with rc4:
-                    rc_notes = st.text_input("Notes / PO Ref.", key="rc_notes",
-                                             placeholder="PO number, supplier…")
-                rc_submit = st.form_submit_button("➕  Record Receipt",
-                                                  use_container_width=False)
+        # ── Material selector (outside form so auto-fill updates reactively) ─
+        mat_opts_r = inv["Material_Code"].tolist()
+        rc_mat = st.selectbox(
+            "🧪 Select Material",
+            options=mat_opts_r,
+            format_func=lambda m: f"{m}  –  "
+                f"{inv.set_index('Material_Code')['Material_Name'].get(m, m)[:35]}",
+            key="rc_mat_sel")
 
-            if rc_submit:
-                if rc_qty <= 0:
-                    st.error("Please enter a quantity > 0.")
-                else:
-                    try:
-                        conn = get_db()
-                        cur  = conn.cursor()
-                        # Insert receipt log
-                        cur.execute("""
-                            INSERT INTO receipt_log
-                              (entry_date, material_code, material_name,
-                               uom, received_qty, notes)
-                            SELECT ?, ?, material_name, uom, ?, ?
-                            FROM inventory WHERE material_code = ?
-                        """, (str(rc_date), rc_mat, rc_qty, rc_notes, rc_mat))
-                        # Add to Available_Qty
-                        cur.execute("""
-                            UPDATE inventory
-                            SET available_qty = available_qty + ?
-                            WHERE material_code = ?
-                        """, (rc_qty, rc_mat))
-                        conn.commit()
-                        conn.close()
-                        st.cache_data.clear()
-                        mat_name = inv.set_index("Material_Code")["Material_Name"].get(
-                            rc_mat, rc_mat)
-                        st.success(f"✅ Received {rc_qty:,.2f} units of {mat_name} "
-                                   f"added to inventory.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error: {e}")
+        # Auto-fill disabled read-only boxes
+        if rc_mat:
+            _rc_row   = inv[inv["Material_Code"] == rc_mat].iloc[0]
+            _rc_avail = float(_rc_row.get("Available_Qty", 0) or 0)
+            _rc_ord   = float(_rc_row.get("Ordered_Qty",  0) or 0)
+            _ri1, _ri2 = st.columns(2)
+            _ri1.text_input("Current Available Qty", value=f"{_rc_avail:,.3f}",
+                            disabled=True, key="rc_avail_disp")
+            _ri2.text_input("Current Ordered Qty",  value=f"{_rc_ord:,.3f}",
+                            disabled=True, key="rc_ord_disp")
 
-            # Show recent receipts as collapsible per-material items
-            if db_available():
-                conn = get_db()
-                rlog = pd.read_sql(
-                    "SELECT entry_date AS Date, material_code AS Code, "
-                    "material_name AS Material, uom AS UOM, "
-                    "received_qty AS \"Received Qty\", notes AS Notes, "
-                    "submitted_at AS \"Received At\" "
-                    "FROM receipt_log ORDER BY submitted_at DESC LIMIT 100", conn)
-                conn.close()
-                if not rlog.empty:
-                    st.markdown('<div class="sec-hdr" style="margin-top:.6rem;">'
-                                'Recent Receipts</div>', unsafe_allow_html=True)
-                    # Group by material code for cleaner display
-                    for mat_code, grp in rlog.groupby("Code", sort=False):
-                        mat_name = grp["Material"].iloc[0]
-                        total_recv = grp["Received Qty"].sum()
-                        latest = grp["Date"].iloc[0]
-                        with st.expander(
-                            f"📦  {mat_code}  ·  {mat_name}  ·  "
-                            f"Total received: {total_recv:,.2f}  ·  Last: {latest}",
-                            expanded=False,
-                        ):
-                            show_cols = ["Date","UOM","Received Qty","Notes","Received At"]
-                            st.dataframe(
-                                grp[show_cols].reset_index(drop=True),
-                                use_container_width=True, hide_index=True)
-                    st.download_button(
-                        "⬇ Download Receipt Log",
-                        data=excel_bytes(rlog,
-                                         report_title="Material Receipt Log — Smart Material Estimator",
-                                         add_grand_total=True),
-                        file_name=f"receipt_log_{date.today()}.xlsx",
-                        mime="application/vnd.ms-excel",
-                        key="dl_receipt_log")
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Consumption History ────────────────────────────────────────────────────
-    st.markdown("<br>", unsafe_allow_html=True)
-    with st.expander("📜 View Consumption History", expanded=False):
-        conn = get_db()
-        log_df = pd.read_sql("""
-            SELECT entry_date AS Date,
-                   equipment_tag AS Equipment,
-                   lining_system_code AS Code,
-                   lining_system_name AS System,
-                   sqm_completed AS "SQM Done",
-                   material_code AS Material,
-                   material_name AS "Material Name",
-                   uom AS UOM,
-                   expected_qty AS "Expected Qty",
-                   consumed_qty AS "Consumed Qty",
-                   notes AS Notes,
-                   submitted_at AS "Submitted At"
-            FROM consumption_log
-            ORDER BY submitted_at DESC
-            LIMIT 200
-        """, conn)
-        conn.close()
+        # ── Receipt form ──────────────────────────────────────────────────────
+        with st.form(key="receipt_form", clear_on_submit=False):
+            rc1, rc2, rc3 = st.columns(3)
+            with rc1:
+                rc_date = st.date_input("📅 Receipt Date", value=date.today(), key="rc_date")
+            with rc2:
+                rc_qty = st.number_input("Qty Received", min_value=0.0,
+                                         value=0.0, step=1.0, format="%.3f", key="rc_qty")
+            with rc3:
+                rc_notes = st.text_input("Notes / PO Ref.", key="rc_notes",
+                                         placeholder="PO number, supplier…")
 
-        if log_df.empty:
-            st.info("No consumption entries yet.")
-        else:
-            # Filter controls
-            fh1, fh2 = st.columns(2)
-            with fh1:
-                log_tags = ["All"] + sorted(log_df["Equipment"].unique().tolist())
-                fh_tag   = st.selectbox("Filter by Equipment", log_tags, key="log_tag")
-            with fh2:
-                log_dates = ["All"] + sorted(log_df["Date"].unique().tolist(), reverse=True)
-                fh_date   = st.selectbox("Filter by Date",     log_dates, key="log_date")
+            # Dynamic extra columns from receipt_log schema
+            _RECEIPT_FIXED = {"id","entry_date","material_code","material_name","uom",
+                               "received_qty","notes","submitted_at"}
+            _rc_conn = get_db()
+            _rc_extra_cols = [(r[1], r[2]) for r in
+                              _rc_conn.execute("PRAGMA table_info(receipt_log)").fetchall()
+                              if r[1].lower() not in _RECEIPT_FIXED]
+            _rc_conn.close()
+            rc_extra_inputs = {}
+            if _rc_extra_cols:
+                st.markdown('<div class="sec-hdr" style="margin-top:.5rem;">'
+                            'Additional Fields</div>', unsafe_allow_html=True)
+                for _ri in range(0, len(_rc_extra_cols), 3):
+                    _rcols = st.columns(3)
+                    for _rj, (_rcn, _rct) in enumerate(_rc_extra_cols[_ri:_ri+3]):
+                        with _rcols[_rj]:
+                            if any(kw in _rcn.lower() for kw in ("qty","sqm","amount","value")):
+                                rc_extra_inputs[_rcn] = st.number_input(
+                                    _rcn.replace("_"," ").title(),
+                                    value=0.0, step=0.001, format="%.3f",
+                                    key=f"rc_ext_{_rcn}")
+                            else:
+                                rc_extra_inputs[_rcn] = st.text_input(
+                                    _rcn.replace("_"," ").title(),
+                                    key=f"rc_ext_{_rcn}")
 
-            df_show = log_df.copy()
-            if fh_tag  != "All": df_show = df_show[df_show["Equipment"]==fh_tag]
-            if fh_date != "All": df_show = df_show[df_show["Date"]==fh_date]
+            rc_submit = st.form_submit_button("✅  Record Receipt", use_container_width=False)
 
-            st.dataframe(df_show, use_container_width=True, hide_index=True,
-                         height=min(600, 50+len(df_show)*35))
-            st.download_button(
-                "⬇ Download Consumption Log",
-                data=excel_bytes(df_show,
-                                 report_title="Daily Consumption Log — Smart Material Estimator",
-                                 add_grand_total=True),
-                file_name=f"consumption_log_{date.today()}.xlsx",
-                mime="application/vnd.ms-excel",
-                use_container_width=False)
+        # Clear Form button (outside form)
+        if st.button("🧹 Clear Form", key="rc_clr_btn"):
+            for _k in list(st.session_state.keys()):
+                if _k.startswith(("rc_date", "rc_qty", "rc_notes", "rc_ext_",
+                                   "rc_avail_disp", "rc_ord_disp", "rc_mat_sel")):
+                    del st.session_state[_k]
+            st.rerun()
+
+        # ── DB write ──────────────────────────────────────────────────────────
+        if rc_submit:
+            rc_qty_val   = st.session_state.get("rc_qty",   0.0)
+            rc_date_val  = st.session_state.get("rc_date",  date.today())
+            rc_notes_val = st.session_state.get("rc_notes", "")
+            if not rc_mat:
+                st.error("Please select a material.")
+            elif rc_qty_val <= 0:
+                st.error("❌ Please enter a quantity > 0.")
+            else:
+                try:
+                    conn = get_db(); cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO receipt_log
+                          (entry_date, material_code, material_name,
+                           uom, received_qty, notes)
+                        SELECT ?, ?, material_name, uom, ?, ?
+                        FROM inventory WHERE material_code = ?
+                    """, (str(rc_date_val), rc_mat, rc_qty_val, rc_notes_val, rc_mat))
+                    # Available_Qty += received; Ordered_Qty -= received (floor 0)
+                    cur.execute("""
+                        UPDATE inventory
+                        SET available_qty = available_qty + ?,
+                            ordered_qty   = MAX(0, ordered_qty - ?)
+                        WHERE material_code = ?
+                    """, (rc_qty_val, rc_qty_val, rc_mat))
+                    conn.commit(); conn.close()
+                    st.cache_data.clear()
+                    _mat_nm = inv.set_index("Material_Code")["Material_Name"].get(rc_mat, rc_mat)
+                    st.success(f"✅ Received {rc_qty_val:,.3f} units of {_mat_nm} "
+                               f"added to inventory. Ordered Qty adjusted.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+
+        # ── Recent Receipts ───────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("📜 View & Edit Receipt History", expanded=False):
+            conn = get_db()
+            _rlog_raw = pd.read_sql(
+                "SELECT id, entry_date AS Date, material_code AS Code, "
+                "material_name AS Material, uom AS UOM, "
+                "received_qty AS \"Received Qty\", notes AS Notes, "
+                "submitted_at AS \"Received At\" "
+                "FROM receipt_log ORDER BY submitted_at DESC LIMIT 100", conn)
+            conn.close()
+            if _rlog_raw.empty:
+                st.info("No receipt entries yet.")
+            else:
+                _rf1, _rf2 = st.columns(2)
+                with _rf1:
+                    _r_mats  = ["All"] + sorted(_rlog_raw["Code"].unique().tolist())
+                    _r_fmat  = st.selectbox("Filter by Material", _r_mats, key="rlog_mat")
+                with _rf2:
+                    _r_dates = ["All"] + sorted(_rlog_raw["Date"].unique().tolist(), reverse=True)
+                    _r_fdate = st.selectbox("Filter by Date", _r_dates, key="rlog_date")
+
+                rlog = _rlog_raw.copy()
+                if _r_fmat  != "All": rlog = rlog[rlog["Code"]==_r_fmat]
+                if _r_fdate != "All": rlog = rlog[rlog["Date"]==_r_fdate]
+                rlog = rlog.reset_index(drop=True)
+
+                _rlog_display = rlog.copy()
+                _rlog_display.insert(0, "Sl. No.", range(1, len(_rlog_display)+1))
+                _rlog_display.insert(1, "☐ Select", False)
+
+                st.data_editor(
+                    _rlog_display,
+                    key="receipt_log_editor",
+                    num_rows="fixed",
+                    hide_index=True,
+                    use_container_width=True,
+                    height=min(500, 50 + len(_rlog_display) * 35),
+                    column_config={
+                        "id":          st.column_config.NumberColumn("ID", disabled=True),
+                        "Sl. No.":     st.column_config.NumberColumn("Sl. No.", disabled=True),
+                        "☐ Select":    st.column_config.CheckboxColumn("☐", default=False),
+                        "Code":        st.column_config.TextColumn("Code", disabled=True),
+                        "Received At": st.column_config.TextColumn("Received At", disabled=True),
+                    },
+                )
+
+                _rb1, _rb2, _rb3 = st.columns([2, 2, 4])
+                with _rb1:
+                    if st.button("💾 Save Cell Edits", key="rlog_save"):
+                        _restate = st.session_state.get("receipt_log_editor", {})
+                        _redits  = _restate.get("edited_rows", {})
+                        _rskip   = {"Sl. No.", "☐ Select", "id", "Code", "Received At"}
+                        _rsaved  = 0
+                        try:
+                            conn = get_db(); cur = conn.cursor()
+                            for _ridx, _changes in _redits.items():
+                                _safe = {k: v for k, v in _changes.items() if k not in _rskip}
+                                if not _safe:
+                                    continue
+                                _pk = int(rlog.iloc[int(_ridx)]["id"])
+                                _col_map = {
+                                    "Date":         "entry_date",
+                                    "Material":     "material_name",
+                                    "UOM":          "uom",
+                                    "Received Qty": "received_qty",
+                                    "Notes":        "notes",
+                                }
+                                _db_safe = {_col_map.get(k, k): v for k, v in _safe.items()}
+                                _set_sql = ", ".join([f'"{k}" = ?' for k in _db_safe])
+                                cur.execute(
+                                    f"UPDATE receipt_log SET {_set_sql} WHERE id = ?",
+                                    list(_db_safe.values()) + [_pk])
+                                _rsaved += 1
+                            conn.commit(); conn.close()
+                            st.cache_data.clear()
+                            st.success(f"✅ {_rsaved} row(s) updated.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error(f"❌ Database error: {_e}")
+
+                with _rb2:
+                    if st.button("🗑️ Delete Selected", key="rlog_del"):
+                        _restate  = st.session_state.get("receipt_log_editor", {})
+                        _redits   = _restate.get("edited_rows", {})
+                        _del_idxs = [int(i) for i, ch in _redits.items()
+                                     if ch.get("☐ Select", False)]
+                        if not _del_idxs:
+                            st.warning("Check the ☐ column on rows you want to delete first.")
+                        else:
+                            try:
+                                conn = get_db(); cur = conn.cursor()
+                                for _di in _del_idxs:
+                                    _pk = int(rlog.iloc[_di]["id"])
+                                    cur.execute("DELETE FROM receipt_log WHERE id = ?", (_pk,))
+                                conn.commit(); conn.close()
+                                st.cache_data.clear()
+                                st.success(f"✅ {len(_del_idxs)} row(s) deleted.")
+                                st.rerun()
+                            except Exception as _e:
+                                st.error(f"❌ Database error: {_e}")
+
+                st.download_button(
+                    "⬇ Download Receipt Log",
+                    data=generate_excel_report(
+                        rlog.drop(columns=["id"], errors="ignore"),
+                        "Material Receipt Log"),
+                    file_name=f"receipt_log_{date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_receipt_log")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2901,7 +3229,7 @@ with tab5:
         "S.No","Equipment No","Name","Substrate","Type","Location",
         "Lining System+","System Code","System Name",
         "Lining Type","Material Spec.","Design",
-        "Total SQM","Lining Area SQM","Done SQM","Remaining SQM",
+        "Total SQM","Lining Area SQM","Already Done SQM","Remaining SQM",
         "Total Demand","Allocated","Shortfall Qty","Fulfil %"
     ]
 
@@ -2948,7 +3276,7 @@ with tab5:
                help="Number of (Equipment, System Code) pairs in current filter.")
     ov2.metric("Total SQM",          f'{filtered_master["Total SQM"].sum():,.1f}',
                help="Sum of original SQM for filtered rows.")
-    ov3.metric("Done SQM",           f'{filtered_master["Done SQM"].sum():,.1f}',
+    ov3.metric("Already Done SQM",           f'{filtered_master["Already Done SQM"].sum():,.1f}',
                help="SQM already completed (from daily consumption entries).")
     ov4.metric("Remaining SQM",      f'{filtered_master["Remaining SQM"].sum():,.1f}',
                help="SQM still to be completed = Total − Done.")
@@ -2976,11 +3304,11 @@ with tab5:
         .apply(_style_master, axis=1)
         .format({
             "Total SQM":     "{:,.2f}",
-            "Done SQM":      "{:,.2f}",
+            "Already Done SQM":      "{:,.2f}",
             "Remaining SQM": "{:,.2f}",
-            "Total Demand":  "{:,.2f}",
-            "Allocated":     "{:,.2f}",
-            "Shortfall Qty": "{:,.2f}",
+            "Total Demand":  "{:,.3f}",
+            "Allocated":     "{:,.3f}",
+            "Shortfall Qty": "{:,.3f}",
             "Fulfil %":      "{:.1f}%",
         }))
     st.dataframe(styled_master, use_container_width=True, hide_index=True,
@@ -2997,7 +3325,7 @@ with tab5:
         if sc_dm.empty: continue
         sname   = filtered_master[filtered_master["System Code"]==code]["System Name"].iloc[0]
         sc_sqm  = filtered_master[filtered_master["System Code"]==code]["Total SQM"].sum()
-        done_sq = filtered_master[filtered_master["System Code"]==code]["Done SQM"].sum()
+        done_sq = filtered_master[filtered_master["System Code"]==code]["Already Done SQM"].sum()
         sc_mat  = sc_dm.groupby(["Material_Code","Material_Name","UOM"],
                                  as_index=False)["Demand_Qty"].sum()
         sc_mat  = sc_mat.merge(inv[["Material_Code","Available_Qty"]],
@@ -3024,7 +3352,7 @@ with tab5:
             m1.metric("System Code", f"Code {code}")
             m2.metric("Short Name",  sname)
             m3.metric("Total SQM",   f"{sc_sqm:,.2f}")
-            m4.metric("Done SQM",    f"{done_sq:,.2f}",
+            m4.metric("Already Done SQM",    f"{done_sq:,.2f}",
                       help="SQM completed via Daily Consumption entries.")
             m5.metric("Available Material Coverage", f"{sc_can:,.2f}  ({sc_cov_avg:.1f}%)",
                       help="SQM coverable with current available material balance.")
@@ -3057,11 +3385,9 @@ with tab5:
     with dl1:
         st.download_button(
             "⬇ Download Filtered Master Table",
-            data=excel_bytes(filtered_master,
-                             report_title=f"Total Overview — {date.today()}",
-                             add_grand_total=True),
+            data=generate_excel_report(filtered_master, f"Total Overview — {date.today()}"),
             file_name=f"total_overview_{date.today()}.xlsx",
-            mime="application/vnd.ms-excel",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True)
     with dl2:
         if db_available():
@@ -3070,10 +3396,9 @@ with tab5:
             conn.close()
             st.download_button(
                 "⬇ Download Full Consumption Log",
-                data=excel_bytes(full_log,
-                                 report_title="Full Consumption Log — Smart Material Estimator"),
+                data=generate_excel_report(full_log, "Full Consumption Log"),
                 file_name=f"consumption_log_full_{date.today()}.xlsx",
-                mime="application/vnd.ms-excel",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
 
 
@@ -3299,15 +3624,6 @@ with tab_master:
                                     DO UPDATE SET original_sqm = excluded.original_sqm
                                 """, (_eq_tag_val, _code, _sqm))
                             conn.commit(); conn.close()
-                            _eq_form_keys = (
-                                ["seq_tag", "seq_loc", "seq_codes_pre"]
-                                + [f"seq_sh_{n}" for n, _ in shared_cols]
-                                + [k for k in list(st.session_state.keys())
-                                   if k.startswith(("seq_sn_", "seq_lt_",
-                                                    "seq_ms_", "seq_ls_", "seq_sqm_"))]
-                            )
-                            for _k in _eq_form_keys:
-                                st.session_state.pop(_k, None)
                             st.cache_data.clear()
                             st.success(
                                 f"✅ Equipment **{_eq_tag_val}** saved for "
@@ -3315,6 +3631,19 @@ with tab_master:
                             st.rerun()
                         except Exception as e:
                             st.error(f"Database error: {e}")
+
+            # Clear Form button (outside form, still inside if sel_codes_display)
+            if st.button("🧹 Clear Equipment Form", key="seq_clr_btn"):
+                _clr_keys = (
+                    ["seq_tag", "seq_loc", "seq_codes_pre"]
+                    + [f"seq_sh_{n}" for n, _ in shared_cols]
+                    + [k for k in list(st.session_state.keys())
+                       if k.startswith(("seq_sn_", "seq_lt_", "seq_ms_", "seq_ls_", "seq_sqm_"))]
+                )
+                for _k in _clr_keys:
+                    st.session_state.pop(_k, None)
+                st.rerun()
+
         else:
             st.info("Select one or more Lining System Codes above to build the entry form.")
 
@@ -3366,14 +3695,18 @@ with tab_master:
                     _ph       = ", ".join(["?"] * len(_dcols))
                     cur.execute(f"INSERT INTO {db_table} ({_cols_str}) VALUES ({_ph})", _dvals)
                     conn.commit(); conn.close()
-                    for _k in list(st.session_state.keys()):
-                        if _k.startswith(f"dyn_{db_table}_"):
-                            del st.session_state[_k]
                     st.cache_data.clear()
                     st.success("✅ Row added successfully.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Database error: {e}")
+
+        # Clear Form button (outside form)
+        if st.button("🧹 Clear Form", key=f"dyn_clr_{db_table}"):
+            for _k in list(st.session_state.keys()):
+                if _k.startswith(f"dyn_{db_table}_"):
+                    del st.session_state[_k]
+            st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
     # VIEW & DELETE SECTION
@@ -3405,9 +3738,26 @@ with tab_master:
         view_df_display = view_df_display.drop(columns=_sl_db_cols, errors="ignore")
         view_df_display.insert(0, "Sl. No.", range(1, len(view_df_display) + 1))
 
-        # Build column_config: lock Sl. No. and the primary key column
+        # ── Global search filter ──────────────────────────────────────────────
+        _md_search = st.text_input(
+            "🔍 Search table...", key=f"md_search_{db_table}",
+            placeholder="Type to filter all columns…")
+        if _md_search:
+            _mask = view_df_display.apply(
+                lambda col: col.astype(str).str.contains(_md_search, case=False, na=False)
+            ).any(axis=1)
+            view_df_display = view_df_display[_mask].reset_index(drop=True)
+            view_df_display["Sl. No."] = range(1, len(view_df_display) + 1)
+
+        # Add checkbox column for bulk delete
+        view_df_display.insert(0, "☐ Select", False)
+
+        # Build column_config
         _col_cfg = {
             "Sl. No.": st.column_config.NumberColumn("Sl. No.", disabled=True),
+            "☐ Select": st.column_config.CheckboxColumn(
+                "☐", help="Check rows to delete, then click 'Delete Selected'",
+                default=False),
         }
         if pk_col in view_df_display.columns:
             _cfg_type = (st.column_config.NumberColumn if pk_cast == int
@@ -3423,73 +3773,56 @@ with tab_master:
             height=min(600, 50 + len(view_df_display) * 35),
             column_config=_col_cfg,
         )
-        st.caption(f"{len(view_df_display)} row(s) in `{db_table}` table.")
+        st.caption(f"Total entries: {len(view_df_display)}")
 
-        if st.button("💾 Save Cell Edits", type="primary", key=f"save_edits_{db_table}"):
-            _editor_state = st.session_state.get(f"md_editor_{db_table}", {})
-            _edited_rows  = _editor_state.get("edited_rows", {})
-            if not _edited_rows:
-                st.info("No changes detected in the grid.")
-            else:
-                try:
-                    conn = get_db(); cur = conn.cursor()
-                    n_saved = 0
-                    for _row_idx, _changes in _edited_rows.items():
-                        # Guard: strip Sl. No. and pk_col — structural, must not be edited
-                        _safe = {k: v for k, v in _changes.items()
-                                 if k not in ("Sl. No.", pk_col)}
-                        if not _safe:
-                            continue
-                        _pk_val    = view_df.iloc[int(_row_idx)][pk_col]
-                        _set_parts = [f'"{k}" = ?' for k in _safe.keys()]
-                        _set_sql   = ", ".join(_set_parts)
-                        _vals      = list(_safe.values()) + [pk_cast(_pk_val)]
-                        cur.execute(
-                            f'UPDATE {db_table} SET {_set_sql} WHERE "{pk_col}" = ?',
-                            _vals)
-                        n_saved += 1
-                    conn.commit(); conn.close()
-                    st.cache_data.clear()
-                    st.success(f"✅ {n_saved} row(s) updated successfully.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Database error: {e}")
+        _btn1, _btn2, _btn3 = st.columns([2, 2, 3])
 
-        st.download_button(
-            f"⬇ Download {md_table_sel} Table",
-            data=excel_bytes(
-                view_df_display.drop(columns=["Sl. No."], errors="ignore"),
-                report_title=f"{md_table_sel} — Smart Material Estimator"),
-            file_name=f"{db_table}_export_{date.today()}.xlsx",
-            mime="application/vnd.ms-excel",
-            key=f"dl_{db_table}",
-        )
+        with _btn1:
+            if st.button("💾 Save Cell Edits", type="primary", key=f"save_edits_{db_table}"):
+                _editor_state = st.session_state.get(f"md_editor_{db_table}", {})
+                _edited_rows  = _editor_state.get("edited_rows", {})
+                if not _edited_rows:
+                    st.info("No changes detected in the grid.")
+                else:
+                    try:
+                        conn = get_db(); cur = conn.cursor()
+                        n_saved = 0
+                        for _row_idx, _changes in _edited_rows.items():
+                            # Guard: skip structural + checkbox columns
+                            _safe = {k: v for k, v in _changes.items()
+                                     if k not in ("Sl. No.", pk_col, "☐ Select")}
+                            if not _safe:
+                                continue
+                            _pk_val    = view_df.iloc[int(_row_idx)][pk_col]
+                            _set_parts = [f'"{k}" = ?' for k in _safe.keys()]
+                            _set_sql   = ", ".join(_set_parts)
+                            _vals      = list(_safe.values()) + [pk_cast(_pk_val)]
+                            cur.execute(
+                                f'UPDATE {db_table} SET {_set_sql} WHERE "{pk_col}" = ?',
+                                _vals)
+                            n_saved += 1
+                        conn.commit(); conn.close()
+                        st.cache_data.clear()
+                        st.success(f"✅ {n_saved} row(s) updated successfully.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Database error: {e}")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="sec-hdr">🗑️ Delete Rows</div>', unsafe_allow_html=True)
-
-        if pk_col in view_df.columns:
-            pk_options = view_df[pk_col].tolist()
-            with st.form(key=f"del_form_{db_table}", clear_on_submit=True):
-                del_ids = st.multiselect(
-                    f"Select `{pk_col}` values to delete (select multiple for bulk deletion)",
-                    options=pk_options,
-                    key=f"del_sel_{db_table}",
-                )
-                st.caption(
-                    "⚠️ Deletion is permanent. For Equipment rows, "
-                    "the matching sqm_progress record is also removed.")
-                del_submit = st.form_submit_button("🗑️ Delete Selected Rows")
-
-            if del_submit:
-                if not del_ids:
-                    st.error("Please select at least one row to delete.")
+        with _btn2:
+            if st.button("🗑️ Delete Selected Rows", type="secondary",
+                         key=f"del_checked_{db_table}"):
+                _editor_state = st.session_state.get(f"md_editor_{db_table}", {})
+                _edited_rows  = _editor_state.get("edited_rows", {})
+                _del_indices = [int(idx) for idx, changes in _edited_rows.items()
+                                if changes.get("☐ Select", False)]
+                if not _del_indices:
+                    st.warning("No rows checked for deletion. Check the ☐ column first.")
                 else:
                     try:
                         conn = get_db(); cur = conn.cursor()
                         n_deleted = 0
-                        for _del_id in del_ids:
-                            # Equipment cascade: fetch tag + code BEFORE deleting the parent row
+                        for _di in _del_indices:
+                            _del_id = view_df.iloc[_di][pk_col]
                             if db_table == "equipment":
                                 _match = view_df[view_df[pk_col] == _del_id]
                                 if not _match.empty:
@@ -3508,5 +3841,15 @@ with tab_master:
                         st.rerun()
                     except Exception as e:
                         st.error(f"Database error: {e}")
-        else:
-            st.warning(f"Primary key column `{pk_col}` not found in table.")
+
+        st.caption("⚠️ Deletion is permanent. Equipment rows also remove the matching sqm_progress record.")
+
+        st.download_button(
+            f"⬇ Download {md_table_sel} Table",
+            data=generate_excel_report(
+                view_df_display.drop(columns=["Sl. No.", "☐ Select"], errors="ignore"),
+                f"{md_table_sel} — Smart Material Estimator"),
+            file_name=f"{db_table}_export_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_{db_table}",
+        )
