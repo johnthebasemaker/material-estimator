@@ -1,23 +1,24 @@
-# Smart Material Estimator — Architecture & Rules
+=== CLAUDE SYSTEM INSTRUCTIONS: SMART MATERIAL ESTIMATOR ===
 
-## 🏗️ Project Overview
-An enterprise-grade Streamlit application for tracking, estimating, and allocating lining materials for construction equipment. It uses a cascading priority allocation engine and a SQLite database.
+You are an Expert Python Architect working on the "Smart Material Estimator" (SME). 
+When writing code or planning features, you MUST adhere to these project-specific skills and constraints:
 
-## 💾 Database Architecture (`sme_database.db`)
-The application was migrated from static Excel files to SQLite. 
-* **`inventory`**: Master list of materials, Available Qty, and Ordered Qty.
-* **`recipe`**: How much of each material is needed for 1 SQM of a specific `lining_system_code`.
-* **`equipment`**: Master list of equipment tags, locations, and their `surface_area_sqm`.
-* **`sqm_progress`**: Tracks completed SQM. `original_sqm` minus `done_sqm` = `remaining_sqm`.
-* **`consumption_log`**: History of daily work entered by users.
-* **`receipt_log`**: History of new material inventory received.
+SKILL 1: Domain Architecture & Strict Joins
+- The app manages structural lining operations via three domains: Inventory, Recipes, and Equipment.
+- Inventory: Tracks physical units (KG, LTR, NOS) via `Material_Code`. 
+- Recipe: Maps `Lining_System_Code` to the components required "For_1_SQM".
+- Equipment: Tracks physical structural dimensions via `Surface_Area_SQM`.
+- Execution Rule: Joins must cascade explicitly: Equipment → Recipe (via Lining_System_Code) → Inventory (via Material_Code). Never mix up Area (SQM) with Material Quantities (KG/NOS).
 
-## ⚙️ Core Mechanics
-* **Data Loader:** `app.py` reads from SQLite via a cached function: `@st.cache_data(show_spinner="Loading project data…") def load_all():`.
-* **Allocation Engine:** `cascade_allocate()` loops through selected equipment and dynamically deducts material requirements from a global inventory pool. It is cached to prevent UI lag.
-* **State Updates:** Any time an `INSERT` or `UPDATE` is executed against the database, the code MUST call `conn.commit()` followed immediately by `st.cache_data.clear()` and `st.rerun()` so the Streamlit UI reflects the live database changes.
+SKILL 2: Streamlit State Synchronization & Data Editors
+- The application utilizes an SQLite back-end (`sme_database.db`) paired with Streamlit's reactive UI.
+- Filtered Editors: When filtering a DataFrame before passing it to `st.data_editor`, changes made in the UI must be mapped back to the original database using the row's primary key, not the Pandas index (which changes during filtering).
+- Write Operations: Any `INSERT`, `UPDATE`, or `DELETE` against SQLite must execute this exact sequence:
+  1. `conn.commit()`
+  2. `st.cache_data.clear()`
+  3. `st.rerun()` (to instantly synchronize the UI).
 
-## 🎨 UI & Styling Rules (STRICT)
-* **Adaptive Theme:** The app perfectly supports both Light and Dark mode. 
-* **NO HARDCODED COLORS:** Never use hex codes (e.g., `#FFFFFF` or `#000000`) for text. Always use Streamlit's native CSS variables injected in the style block: `var(--t0)` to `var(--t5)` for text, and `var(--bg0)` to `var(--bg4)` for backgrounds.
-* **Tables:** Always use Streamlit's native `st.dataframe` with Pandas `.style` for background colors. Do not use Plotly `go.Table` as it breaks in Dark Mode.
+SKILL 3: UI/UX & Layout Patterns
+- Never use hex codes for colors. Always use native Streamlit CSS variables (e.g., `var(--t1)`, `var(--bg0)`) to support Dark/Light mode dynamically.
+- Always organize heavy UI elements into `st.tabs` or `st.expander` to save vertical space.
+- Use `st.columns()` to align metrics and search filters horizontally above dataframes.

@@ -40,134 +40,246 @@ def _logo_b64() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-:root{
-  /* Map to Streamlit's native theme to seamlessly adapt to Light/Dark mode */
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* ── DESIGN TOKENS ── */
+:root {
   --bg0: var(--background-color);
   --bg1: var(--secondary-background-color);
   --bg2: var(--secondary-background-color);
   --bg3: var(--background-color);
   --bg4: var(--secondary-background-color);
-  --border: rgba(128, 128, 128, 0.2);
-  --border2: rgba(128, 128, 128, 0.3);
-  
-  /* Preserving accent colors */
-  --amber:#F59E0B;--amber2:#FCD34D;--amber-bg:rgba(245,158,11,.15);
-  --green:#10B981;--green-bg:rgba(16,185,129,.15);
-  --red:#EF4444;--red-bg:rgba(239,68,68,.15);
-  --orange:#F97316;--orange-bg:rgba(249,115,22,.15);
-  --yellow:#EAB308;--yellow-bg:rgba(234,179,8,.15);
-  --blue:#3B82F6;--blue-bg:rgba(59,130,246,.15);
-  
-  /* Adaptive Text Colors using CSS color-mix */
+  --border:  rgba(128,128,128,.18);
+  --border2: rgba(128,128,128,.28);
+
+  --amber:      #F59E0B;
+  --amber2:     #FCD34D;
+  --amber3:     #D97706;
+  --amber-bg:   rgba(245,158,11,.11);
+  --amber-glow: rgba(245,158,11,.22);
+  --green:      #10B981;
+  --green-bg:   rgba(16,185,129,.11);
+  --green-glow: rgba(16,185,129,.18);
+  --red:        #EF4444;
+  --red-bg:     rgba(239,68,68,.11);
+  --orange:     #F97316;
+  --orange-bg:  rgba(249,115,22,.11);
+  --yellow:     #EAB308;
+  --yellow-bg:  rgba(234,179,8,.11);
+  --blue:       #3B82F6;
+  --blue-bg:    rgba(59,130,246,.11);
+  --blue-glow:  rgba(59,130,246,.18);
+
   --t0: var(--text-color);
   --t1: var(--text-color);
-  --t2: color-mix(in srgb, var(--text-color) 80%, transparent);
-  --t3: color-mix(in srgb, var(--text-color) 60%, transparent);
+  --t2: color-mix(in srgb, var(--text-color) 82%, transparent);
+  --t3: color-mix(in srgb, var(--text-color) 62%, transparent);
   --t4: color-mix(in srgb, var(--text-color) 45%, transparent);
   --t5: color-mix(in srgb, var(--text-color) 30%, transparent);
-}
-html,body,[class*="css"]{font-family:'Sora',sans-serif!important;background:var(--bg0)!important;color:var(--t1);}
-.main .block-container{padding-top:0!important;padding-bottom:3rem;max-width:1480px;}
 
-/* sidebar */
-[data-testid="stSidebar"]{background:var(--bg1)!important;border-right:1px solid var(--border)!important;}
-[data-testid="stSidebar"] *{font-family:'Sora',sans-serif!important;}
-
-/* ── TRUE STICKY HEADER & TABS ── */
-header[data-testid="stHeader"]{height:0!important;min-height:0!important;padding:0!important;background:transparent!important;overflow:visible!important;}
-[data-testid="collapsedControl"]{display:flex!important;visibility:visible!important;opacity:1!important;position:fixed!important;top:.45rem!important;left:.5rem!important;z-index:10001!important;}
-[data-testid="stAppViewContainer"]{padding-top:0!important;}
-
-/* 1. Freeze the main title block */
-.sticky-header-wrap{
-    position:sticky;top:0;z-index:9999;
-    background:var(--bg0);
-    padding:.8rem 1.5rem .5rem;
-    margin-bottom:0;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
 }
 
-/* 2. Freeze the Tabs right below the header */
+/* ── CUSTOM SCROLLBAR ── */
+::-webkit-scrollbar { width:5px; height:5px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border2); border-radius:99px; }
+::-webkit-scrollbar-thumb:hover { background:var(--amber); }
+
+/* ── BASE ── */
+html,body,[class*="css"] { font-family:'Inter',sans-serif!important; background:var(--bg0)!important; color:var(--t1); }
+.main .block-container { padding-top:0!important; padding-bottom:3rem; max-width:1500px; }
+
+/* ── SIDEBAR ── */
+[data-testid="stSidebar"] { background:var(--bg1)!important; border-right:1px solid var(--border)!important; }
+[data-testid="stSidebar"] * { font-family:'Inter',sans-serif!important; }
+[data-testid="stSidebar"]::before {
+  content:''; display:block; height:3px;
+  background:linear-gradient(90deg,var(--amber3) 0%,var(--amber) 50%,transparent 100%);
+  position:sticky; top:0; z-index:1;
+}
+
+/* ── HEADER CHROME ── */
+header[data-testid="stHeader"] { height:0!important; min-height:0!important; padding:0!important; background:transparent!important; overflow:visible!important; }
+[data-testid="collapsedControl"] { display:flex!important; visibility:visible!important; opacity:1!important; position:fixed!important; top:.45rem!important; left:.5rem!important; z-index:10001!important; }
+[data-testid="stAppViewContainer"] { padding-top:0!important; }
+
+/* ── STICKY HEADER ── */
+.sticky-header-wrap {
+  position:sticky; top:0; z-index:9999;
+  background:var(--bg0);
+  padding:.75rem 1.5rem .45rem;
+  margin-bottom:0;
+  border-bottom:1px solid var(--border);
+  box-shadow:0 2px 24px rgba(0,0,0,.07);
+}
+.sticky-header-wrap::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:2px;
+  background:linear-gradient(90deg,var(--amber3) 0%,var(--amber) 40%,var(--amber2) 70%,transparent 100%);
+}
+
+/* ── TABS ── */
 [data-testid="stTabs"] > div:first-of-type {
-    position: sticky;
-    top: 50px; /* Sits right under sticky-header-wrap */
-    z-index: 9998;
-    background: var(--bg0);
-    padding: 0.5rem 0;
-    border-bottom: 2px solid var(--border);
+  position:sticky; top:52px; z-index:9998;
+  background:var(--bg0);
+  padding:.35rem .3rem;
+  border-bottom:1px solid var(--border);
+}
+[data-testid="stTabs"] [data-baseweb="tab-list"] { background:transparent; border-bottom:none; gap:.1rem; padding:0; }
+[data-testid="stTabs"] [data-baseweb="tab"] {
+  font-family:'JetBrains Mono',monospace!important;
+  font-size:.67rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--t4)!important;
+  padding:.5rem 1.1rem;
+  border-radius:var(--r-sm);
+  border-bottom:2px solid transparent;
+  transition:all .18s;
+}
+[data-testid="stTabs"] [data-baseweb="tab"]:hover { color:var(--t2)!important; background:var(--amber-bg); }
+[data-testid="stTabs"] [aria-selected="true"] { color:var(--amber)!important; border-bottom:2px solid var(--amber)!important; background:var(--amber-bg)!important; }
+
+/* ── BUTTONS ── */
+.stButton>button {
+  font-family:'JetBrains Mono',monospace!important;
+  font-size:.68rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  background:linear-gradient(135deg,var(--amber3) 0%,var(--amber) 100%)!important;
+  color:#000!important; border:none!important;
+  border-radius:var(--r-sm)!important;
+  padding:.5rem 1.2rem!important;
+  transition:all .18s!important;
+  box-shadow:0 2px 10px var(--amber-glow)!important;
+}
+.stButton>button:hover { background:linear-gradient(135deg,var(--amber) 0%,var(--amber2) 100%)!important; transform:translateY(-2px)!important; box-shadow:0 6px 20px var(--amber-glow)!important; }
+.stButton>button:active { transform:translateY(0)!important; }
+
+/* ── NATIVE METRICS ── */
+[data-testid="stMetric"] {
+  background:var(--bg2); border:1px solid var(--border);
+  border-radius:var(--r-md); padding:.9rem 1rem!important;
+  transition:all .22s; cursor:default;
+  position:relative; overflow:hidden;
+}
+[data-testid="stMetric"]::before {
+  content:''; position:absolute; top:0; left:0;
+  width:3px; height:100%; background:var(--amber); border-radius:99px 0 0 99px;
+}
+[data-testid="stMetric"]:hover { border-color:var(--amber)!important; box-shadow:0 0 0 1px var(--amber),0 4px 22px var(--amber-glow)!important; transform:translateY(-2px)!important; }
+[data-testid="stMetricLabel"] { font-family:'JetBrains Mono',monospace!important; font-size:.58rem!important; letter-spacing:.13em; text-transform:uppercase; color:var(--t4)!important; padding-left:.5rem; }
+[data-testid="stMetricValue"] { font-family:'JetBrains Mono',monospace!important; font-size:1.9rem!important; font-weight:700!important; color:var(--t0)!important; padding-left:.5rem; }
+[data-testid="stMetricDelta"] { font-size:.72rem!important; }
+
+/* ── ALERT BOXES ── */
+[data-testid="stInfo"]    { background:var(--blue-bg)!important;   border-left:3px solid var(--blue)!important;   border-radius:var(--r-sm)!important; color:var(--t1)!important; }
+[data-testid="stSuccess"] { background:var(--green-bg)!important;  border-left:3px solid var(--green)!important;  border-radius:var(--r-sm)!important; color:var(--t1)!important; }
+[data-testid="stWarning"] { background:var(--amber-bg)!important;  border-left:3px solid var(--amber)!important;  border-radius:var(--r-sm)!important; color:var(--t1)!important; }
+[data-testid="stError"]   { background:var(--red-bg)!important;    border-left:3px solid var(--red)!important;    border-radius:var(--r-sm)!important; color:var(--t1)!important; }
+
+/* ── EXPANDERS ── */
+[data-testid="stExpander"] { background:var(--bg2)!important; border:1px solid var(--border)!important; border-radius:var(--r-md)!important; overflow:hidden; }
+[data-testid="stExpander"] summary { color:var(--t1)!important; font-weight:600; padding:.7rem 1rem!important; }
+[data-testid="stExpander"] summary:hover { background:var(--amber-bg)!important; }
+
+/* ── SELECT / INPUT ── */
+[data-baseweb="select"]>div,[data-baseweb="input"]>div { background:var(--bg2)!important; border-color:var(--border2)!important; border-radius:var(--r-sm)!important; color:var(--t0)!important; }
+
+/* ── DATAFRAME ── */
+[data-testid="stDataFrame"] { border:1px solid var(--border)!important; border-radius:var(--r-md); overflow:hidden; }
+[data-testid="stDataFrame"] [role="columnheader"],[data-testid="stDataFrame"] th,
+[data-testid="stDataFrame"] .dvn-column-header,[data-testid="stDataFrame"] .dvn-header-row [role="cell"] {
+  font-weight:700!important; color:var(--text-color)!important; background:var(--bg2)!important;
 }
 
-/* tabs styling */
-[data-testid="stTabs"] [data-baseweb="tab-list"]{background:transparent;border-bottom:none;gap:0;padding:0;}
-[data-testid="stTabs"] [data-baseweb="tab"]{font-family:'JetBrains Mono',monospace!important;font-size:.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--t4)!important;padding:.7rem 1.3rem;border-bottom:3px solid transparent;transition:all .2s;}
-[data-testid="stTabs"] [aria-selected="true"]{color:var(--amber)!important;border-bottom:3px solid var(--amber)!important;}
+/* ── DIVIDERS ── */
+hr { border:none!important; height:1px!important; background:linear-gradient(90deg,transparent,var(--border2),transparent)!important; margin:.8rem 0!important; }
 
-/* buttons */
-.stButton>button{font-family:'JetBrains Mono',monospace!important;font-size:.68rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:var(--amber)!important;color:#000!important;border:none!important;border-radius:4px!important;padding:.48rem 1.1rem!important;transition:all .15s!important;}
-.stButton>button:hover{background:#FBBF24!important;transform:translateY(-1px);box-shadow:0 4px 14px rgba(245,158,11,.3)!important;}
+/* ── RADIO BUTTONS ── */
+[data-testid="stRadio"] label { font-family:'JetBrains Mono',monospace!important; font-size:.72rem!important; font-weight:600!important; }
 
-/* metrics */
-[data-testid="stMetric"]{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.85rem 1rem!important;transition:all .2s;cursor:default;}
-[data-testid="stMetric"]:hover{background:var(--bg3)!important;border-color:var(--amber)!important;box-shadow:0 0 0 1px var(--amber);transform:translateY(-1px);}
-[data-testid="stMetricLabel"]{font-family:'JetBrains Mono',monospace!important;font-size:.6rem!important;letter-spacing:.12em;text-transform:uppercase;color:var(--t3)!important;}
-[data-testid="stMetricValue"]{font-family:'JetBrains Mono',monospace!important;font-size:1.8rem!important;color:var(--t0)!important;}
-[data-testid="stMetricDelta"]{font-size:.72rem!important;}
+/* ── CUSTOM COMPONENTS ── */
 
-/* info boxes */
-[data-testid="stInfo"]   {background:var(--blue-bg)!important;border-left:3px solid var(--blue)!important; color:var(--t1)!important;}
-[data-testid="stSuccess"]{background:var(--green-bg)!important;border-left:3px solid var(--green)!important; color:var(--t1)!important;}
-[data-testid="stWarning"]{background:var(--amber-bg)!important;border-left:3px solid var(--amber)!important; color:var(--t1)!important;}
-[data-testid="stError"]  {background:var(--red-bg)!important;border-left:3px solid var(--red)!important; color:var(--t1)!important;}
+.sec-hdr {
+  font-family:'JetBrains Mono',monospace; font-size:.6rem; font-weight:700;
+  letter-spacing:.18em; text-transform:uppercase; color:var(--t5);
+  border-bottom:1px solid var(--border); padding-bottom:.35rem; margin-bottom:.9rem;
+  position:relative;
+}
+.sec-hdr::after { content:''; position:absolute; bottom:-1px; left:0; width:36px; height:1px; background:var(--amber); }
 
-/* expander */
-[data-testid="stExpander"]{background:var(--bg2)!important;border:1px solid var(--border)!important;border-radius:6px!important;}
-[data-testid="stExpander"] summary{color:var(--t1)!important;}
+.card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r-md); padding:1rem 1.2rem; margin-bottom:.6rem; transition:box-shadow .2s; }
+.card:hover { box-shadow:0 2px 18px rgba(0,0,0,.1); }
+.card-amber { border-left:3px solid var(--amber); }
+.card-green { border-left:3px solid var(--green); }
+.card-blue  { border-left:3px solid var(--blue); }
 
-/* select */
-[data-baseweb="select"]>div,[data-baseweb="input"]>div{background:var(--bg2)!important;border-color:var(--border2)!important;color:var(--t0)!important;}
+.loc-badge { display:inline-flex; align-items:center; flex-shrink:0; white-space:nowrap!important; font-family:'JetBrains Mono',monospace; font-size:.62rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase; padding:.2rem .7rem; border-radius:99px; }
+.loc-bf { background:rgba(59,130,246,.12); color:var(--blue);  border:1px solid rgba(59,130,246,.22); }
+.loc-tj { background:rgba(245,158,11,.12); color:var(--amber); border:1px solid rgba(245,158,11,.22); }
+.loc-tk { background:rgba(16,185,129,.12); color:var(--green); border:1px solid rgba(16,185,129,.22); }
 
-/* dataframe */
-[data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:6px;overflow:hidden;}
-[data-testid="stDataFrame"] [role="columnheader"],[data-testid="stDataFrame"] th,[data-testid="stDataFrame"] .dvn-column-header,[data-testid="stDataFrame"] .dvn-header-row [role="cell"]{font-weight:700!important;color:var(--text-color)!important;}
-hr{border-color:var(--border)!important;margin:.8rem 0!important;}
+.pill { display:inline-flex; align-items:center; flex-shrink:0; white-space:nowrap!important; font-family:'JetBrains Mono',monospace; font-size:.68rem; font-weight:600; padding:.18rem .6rem; border-radius:99px; }
+.pill-g { background:var(--green-bg); color:var(--green); border:1px solid rgba(16,185,129,.18); }
+.pill-y { background:var(--yellow-bg); color:var(--yellow); border:1px solid rgba(234,179,8,.18); }
+.pill-o { background:var(--orange-bg); color:var(--orange); border:1px solid rgba(249,115,22,.18); }
+.pill-r { background:var(--red-bg);    color:var(--red);    border:1px solid rgba(239,68,68,.18); }
 
-/* ── Custom components ── */
-.sec-hdr{font-family:'JetBrains Mono',monospace;font-size:.6rem;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--t5);border-bottom:1px solid var(--border);padding-bottom:.3rem;margin-bottom:.8rem;}
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem 1.2rem;margin-bottom:.6rem;}
-.card-amber{border-left:4px solid var(--amber);}
-.card-green{border-left:4px solid var(--green);}
-.card-blue {border-left:4px solid var(--blue);}
-.loc-badge{display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap!important;font-family:'JetBrains Mono',monospace;font-size:.62rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;padding:.18rem .6rem;border-radius:3px;}
-.loc-bf{background:rgba(59,130,246,.12);color:var(--blue);}
-.loc-tj{background:rgba(245,158,11,.12);color:var(--amber);}
-.loc-tk{background:rgba(16,185,129,.12);color:var(--green);}
-.pill{display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap!important;font-family:'JetBrains Mono',monospace;font-size:.68rem;font-weight:600;padding:.15rem .5rem;border-radius:20px;}
-.pill-g{background:var(--green-bg);color:var(--green);}
-.pill-y{background:var(--yellow-bg);color:var(--yellow);}
-.pill-o{background:var(--orange-bg);color:var(--orange);}
-.pill-r{background:var(--red-bg);color:var(--red);}
-.tag-chip{display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap!important;font-family:'JetBrains Mono',monospace;font-size:.7rem;background:var(--bg3);color:var(--amber);border:1px solid var(--border2);border-radius:4px;padding:.15rem .5rem;margin:.12rem;}
-.syscode-block{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:.7rem .9rem;margin:.35rem 0;}
-.syscode-hdr{display:flex;align-items:center;gap:.7rem;margin-bottom:.5rem;flex-wrap:nowrap;overflow-x:auto;}
-.code-badge{display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap!important;font-family:'JetBrains Mono',monospace;font-size:.68rem;font-weight:700;background:var(--bg4);color:var(--amber);border:1px solid var(--amber-bg);border-radius:4px;padding:.2rem .55rem;}
-.session-equip{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.9rem 1rem;margin-bottom:.5rem;overflow:hidden;}
-.drag-handle{font-size:1rem;color:var(--t5);cursor:grab;user-select:none;padding:.2rem .4rem;}
-.grand-box{background:linear-gradient(135deg, var(--amber-bg) 0%, var(--bg2) 70%);border:1px solid var(--border2);border-left:4px solid var(--amber);border-radius:8px;padding:1.1rem 1.4rem;}
-.status-dot-g::before{content:"●";color:var(--green);margin-right:.4rem;}
-.status-dot-o::before{content:"●";color:var(--orange);margin-right:.4rem;}
-.status-dot-y::before{content:"●";color:var(--yellow);margin-right:.4rem;}
-.status-dot-r::before{content:"●";color:var(--red);margin-right:.4rem;}
-/* ── Mobile Responsiveness ── */
-@media (max-width: 768px) {
-    .sticky-header-wrap{position:relative!important;padding:.5rem .6rem .3rem!important;}
-    [data-testid="stTabs"] > div:first-of-type{position:relative!important;top:0!important;}
-    .main .block-container{padding:.4rem .5rem 2rem!important;}
-    [data-testid="stMetricValue"]{font-size:1.2rem!important;}
-    [data-testid="stMetricLabel"]{font-size:.55rem!important;}
-    .syscode-hdr{flex-wrap:wrap!important;overflow-x:visible!important;gap:.4rem!important;}
-    .card{padding:.6rem .8rem!important;}
-    .code-badge{font-size:.6rem!important;}
-    .loc-badge{font-size:.56rem!important;}
+.tag-chip { display:inline-flex; align-items:center; flex-shrink:0; white-space:nowrap!important; font-family:'JetBrains Mono',monospace; font-size:.7rem; background:var(--amber-bg); color:var(--amber); border:1px solid rgba(245,158,11,.2); border-radius:var(--r-sm); padding:.15rem .55rem; margin:.12rem; }
+.syscode-block { background:var(--bg3); border:1px solid var(--border2); border-radius:var(--r-md); padding:.7rem .9rem; margin:.35rem 0; }
+.syscode-hdr { display:flex; align-items:center; gap:.7rem; margin-bottom:.5rem; flex-wrap:nowrap; overflow-x:auto; }
+.code-badge { display:inline-flex; align-items:center; flex-shrink:0; white-space:nowrap!important; font-family:'JetBrains Mono',monospace; font-size:.68rem; font-weight:700; background:var(--amber-bg); color:var(--amber); border:1px solid rgba(245,158,11,.22); border-radius:var(--r-sm); padding:.22rem .6rem; }
+.session-equip { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r-md); padding:.9rem 1rem; margin-bottom:.5rem; overflow:hidden; }
+.drag-handle { font-size:1rem; color:var(--t5); cursor:grab; user-select:none; padding:.2rem .4rem; }
+
+.grand-box {
+  background:linear-gradient(135deg,var(--amber-bg) 0%,var(--bg2) 60%);
+  border:1px solid var(--border2); border-left:3px solid var(--amber);
+  border-radius:var(--r-lg); padding:1.2rem 1.5rem;
+  position:relative; overflow:hidden;
+}
+.grand-box::after {
+  content:''; position:absolute; top:-50px; right:-50px;
+  width:140px; height:140px;
+  background:radial-gradient(circle,var(--amber-glow) 0%,transparent 70%);
+  pointer-events:none;
+}
+
+.status-dot-g::before { content:"●"; color:var(--green);  margin-right:.4rem; }
+.status-dot-o::before { content:"●"; color:var(--orange); margin-right:.4rem; }
+.status-dot-y::before { content:"●"; color:var(--yellow); margin-right:.4rem; }
+.status-dot-r::before { content:"●"; color:var(--red);    margin-right:.4rem; }
+
+/* ── KPI POPOVER BUTTONS ── */
+[data-testid="stPopover"] button {
+  background:var(--bg2)!important; border:1px solid var(--border)!important;
+  border-radius:var(--r-md)!important; padding:.9rem 1rem!important;
+  height:auto!important; min-height:80px!important;
+  text-align:left!important; white-space:pre-wrap!important;
+  transition:all .22s!important; color:var(--t0)!important;
+  position:relative!important; overflow:hidden!important;
+}
+[data-testid="stPopover"] button::before {
+  content:''; position:absolute; top:0; left:0;
+  width:2px; height:100%; background:var(--amber); border-radius:99px 0 0 99px;
+}
+[data-testid="stPopover"] button:hover {
+  background:var(--bg3)!important; border-color:var(--amber)!important;
+  box-shadow:0 0 0 1px var(--amber),0 4px 22px var(--amber-glow)!important;
+  transform:translateY(-2px)!important;
+}
+[data-testid="stPopover"] button p { font-family:'JetBrains Mono',monospace!important; font-size:.88rem!important; color:var(--t0)!important; line-height:1.5!important; }
+
+/* ── MOBILE ── */
+@media (max-width:768px) {
+  .sticky-header-wrap { position:relative!important; padding:.5rem .6rem .3rem!important; }
+  [data-testid="stTabs"] > div:first-of-type { position:relative!important; top:0!important; }
+  .main .block-container { padding:.4rem .5rem 2rem!important; }
+  [data-testid="stMetricValue"] { font-size:1.3rem!important; }
+  [data-testid="stMetricLabel"] { font-size:.55rem!important; }
+  .syscode-hdr { flex-wrap:wrap!important; overflow-x:visible!important; gap:.4rem!important; }
+  .card { padding:.6rem .8rem!important; }
+  .code-badge { font-size:.6rem!important; }
+  .loc-badge { font-size:.56rem!important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -462,9 +574,55 @@ def sqm_can_do(alloc_df: pd.DataFrame, tag: str, code: str) -> tuple[float, floa
     return round(total_sqm, 2), can, short
 
 
+def dbl_click_metric(
+    label: str,
+    value: str,
+    state_key: str,
+    drilldown_title: str,
+    drilldown_df,
+    help_text: str = "",
+    delta: str = "",
+    height: int = 95,
+) -> None:
+    """Renders a metric card popover — click opens the drill-down table."""
+    btn_label = f"**{label}**\n\n{value}"
+    if delta:
+        btn_label += f"\n\n{delta}"
+    with st.popover(btn_label, use_container_width=True,
+                    help=help_text if help_text else None):
+        st.subheader(drilldown_title)
+        if help_text:
+            st.caption(help_text)
+        _df = drilldown_df if drilldown_df is not None else pd.DataFrame()
+        if len(_df):
+            _MAX_ROWS = 200
+            _total = len(_df)
+            if _total > _MAX_ROWS:
+                st.caption(f"Showing top {_MAX_ROWS:,} of {_total:,} rows")
+                _df = _df.head(_MAX_ROWS)
+            st.dataframe(_df, use_container_width=True, hide_index=True,
+                         height=min(35 * (len(_df) + 1) + 3, 420))
+        else:
+            st.info("No detail data available for this metric.")
+
+
+COLOR_SCHEMES = {
+    "dashboard":   {"title_bg": "#1A2A3A", "header_bg": "#2D4A6A", "total_bg": "#F0C040", "total_fg": "#000000"},
+    "brown_field": {"title_bg": "#0F2D52", "header_bg": "#1E5799", "total_bg": "#BDD7F0", "total_fg": "#000000"},
+    "train_j":     {"title_bg": "#4A2E00", "header_bg": "#A0620A", "total_bg": "#FDE8A0", "total_fg": "#000000"},
+    "train_k":     {"title_bg": "#0A2E1A", "header_bg": "#1A6B48", "total_bg": "#B3F0D8", "total_fg": "#000000"},
+    "session":     {"title_bg": "#2D1A52", "header_bg": "#5B2D8E", "total_bg": "#E5D0F0", "total_fg": "#000000"},
+    "execution":   {"title_bg": "#3A0A0A", "header_bg": "#8E1A1A", "total_bg": "#F5C6C6", "total_fg": "#000000"},
+    "overview":    {"title_bg": "#0A2A2A", "header_bg": "#0E7490", "total_bg": "#A5F3FC", "total_fg": "#000000"},
+}
+_LOC_COLOR_MAP = {"Brown Field": "brown_field", "TRAIN J": "train_j", "TRAIN K": "train_k"}
+_TABLE_COLOR_MAP = {"equipment": "brown_field", "recipe": "train_j", "inventory": "train_k"}
+
+
 def generate_excel_report(df: pd.DataFrame,
                           report_title: str = "",
-                          add_grand_total: bool = True) -> bytes:
+                          add_grand_total: bool = True,
+                          color_scheme: str = "dashboard") -> bytes:
     """
     Professional Excel export using xlsxwriter:
     - Rows 0-3: space reserved for logo image (inserted at A1)
@@ -497,6 +655,7 @@ def generate_excel_report(df: pd.DataFrame,
     HEADER_ROW = 5   # 0-indexed row for column headers
     DATA_START = 6   # 0-indexed first data row
     n_cols = len(out_df.columns)
+    cs = COLOR_SCHEMES.get(color_scheme, COLOR_SCHEMES["dashboard"])
 
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         # Write data at HEADER_ROW so xlsxwriter positions cells correctly;
@@ -510,20 +669,20 @@ def generate_excel_report(df: pd.DataFrame,
         # ── Formats ───────────────────────────────────────────────────────
         title_fmt = wb.add_format({
             "bold": True, "font_size": 13, "font_color": "#FFFFFF",
-            "bg_color": "#1A2A3A", "align": "center", "valign": "vcenter",
+            "bg_color": cs["title_bg"], "align": "center", "valign": "vcenter",
             "border": 0,
         })
         header_fmt = wb.add_format({
             "bold": True, "font_size": 10, "font_color": "#FFFFFF",
-            "bg_color": "#2D4A6A", "align": "center", "valign": "vcenter",
+            "bg_color": cs["header_bg"], "align": "center", "valign": "vcenter",
             "border": 1,
         })
         data_fmt = wb.add_format({
             "font_size": 9, "border": 1, "valign": "vcenter",
         })
         total_fmt = wb.add_format({
-            "bold": True, "font_size": 10, "bg_color": "#F0C040",
-            "border": 1, "valign": "vcenter",
+            "bold": True, "font_size": 10, "bg_color": cs["total_bg"],
+            "font_color": cs["total_fg"], "border": 1, "valign": "vcenter",
         })
 
         # ── Logo — pre-resized to exactly 121×83 px @ 96 DPI = 1.26"×0.86" ─
@@ -571,6 +730,7 @@ def generate_excel_report(df: pd.DataFrame,
         for col_i, col_name in enumerate(out_df.columns):
             ws.write(HEADER_ROW, col_i, col_name, header_fmt)
         ws.set_row(HEADER_ROW, 18)
+        ws.autofilter(HEADER_ROW, 0, HEADER_ROW, n_cols - 1)
 
         # ── Re-write data rows with formatting ────────────────────────────
         is_grand_total = add_grand_total and len(out_df) > 0
@@ -588,6 +748,103 @@ def generate_excel_report(df: pd.DataFrame,
             ws.set_column(col_i, col_i, min(int(max_len) + 3, 42))
 
     return buf.getvalue()
+
+
+def generate_multi_sheet_excel(sheets: list) -> bytes:
+    """
+    Build one workbook with one sheet per entry in `sheets`.
+    Each sheet gets its own color scheme and AutoFilter.
+    sheets: list of dicts with keys:
+        name (str)             — Excel tab name (max 31 chars)
+        df   (DataFrame)       — data
+        title (str)            — title bar text
+        color_scheme (str)     — key into COLOR_SCHEMES
+        add_grand_total (bool) — default True
+    """
+    buf = io.BytesIO()
+    TITLE_ROW, HEADER_ROW, DATA_START = 4, 5, 6
+
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        wb = writer.book
+        for spec in sheets:
+            out_df = spec["df"].copy()
+            title  = spec.get("title", spec["name"])
+            cs     = COLOR_SCHEMES.get(spec.get("color_scheme", "dashboard"), COLOR_SCHEMES["dashboard"])
+            add_gt = spec.get("add_grand_total", True)
+            sname  = spec["name"][:31]
+
+            for _drop in ("☐ Select", "Sl. No."):
+                if _drop in out_df.columns:
+                    out_df = out_df.drop(columns=[_drop])
+
+            if add_gt and len(out_df) > 0:
+                num_cols = out_df.select_dtypes(include="number").columns.tolist()
+                total_row = {c: "" for c in out_df.columns}
+                total_row[out_df.columns[0]] = "GRAND TOTAL"
+                for c in num_cols:
+                    try: total_row[c] = out_df[c].sum()
+                    except: pass
+                out_df = pd.concat([out_df, pd.DataFrame([total_row])], ignore_index=True)
+
+            n_cols = len(out_df.columns)
+            out_df.to_excel(writer, index=False, sheet_name=sname, startrow=HEADER_ROW)
+            ws = writer.sheets[sname]
+
+            title_fmt  = wb.add_format({"bold": True, "font_size": 13, "font_color": "#FFFFFF",
+                "bg_color": cs["title_bg"], "align": "center", "valign": "vcenter", "border": 0})
+            header_fmt = wb.add_format({"bold": True, "font_size": 10, "font_color": "#FFFFFF",
+                "bg_color": cs["header_bg"], "align": "center", "valign": "vcenter", "border": 1})
+            data_fmt   = wb.add_format({"font_size": 9, "border": 1, "valign": "vcenter"})
+            total_fmt  = wb.add_format({"bold": True, "font_size": 10, "border": 1,
+                "bg_color": cs["total_bg"], "font_color": cs["total_fg"], "valign": "vcenter"})
+            meta_label_fmt = wb.add_format({"font_size": 8, "bold": True, "align": "right",
+                "valign": "vcenter", "font_color": "#555555"})
+            meta_value_fmt = wb.add_format({"font_size": 8, "align": "left",
+                "valign": "vcenter", "font_color": "#333333"})
+
+            if os.path.exists(LOGO_PATH):
+                _logo_buf = io.BytesIO()
+                with _PILImage.open(LOGO_PATH) as _img:
+                    _img = _img.resize((121, 83), _PILImage.Resampling.LANCZOS)
+                    _img.save(_logo_buf, format="PNG", dpi=(96, 96))
+                _logo_buf.seek(0)
+                ws.insert_image(0, 0, "logo.png", {"image_data": _logo_buf,
+                    "x_offset": 4, "y_offset": 4, "object_position": 1})
+            for _r in range(4):
+                ws.set_row(_r, 16)
+
+            if n_cols >= 2:
+                _gen_time = datetime.now().strftime("%Y-%m-%d  %H:%M")
+                ws.write(1, n_cols - 2, "Report Generated:", meta_label_fmt)
+                ws.write(1, n_cols - 1, _gen_time, meta_value_fmt)
+                ws.write(2, n_cols - 2, "Generated By:", meta_label_fmt)
+                ws.write(2, n_cols - 1, "Smart Material Estimator", meta_value_fmt)
+
+            if title and n_cols > 1:
+                ws.merge_range(TITLE_ROW, 0, TITLE_ROW, n_cols - 1, title, title_fmt)
+            elif title:
+                ws.write(TITLE_ROW, 0, title, title_fmt)
+            ws.set_row(TITLE_ROW, 22)
+
+            for col_i, col_name in enumerate(out_df.columns):
+                ws.write(HEADER_ROW, col_i, col_name, header_fmt)
+            ws.set_row(HEADER_ROW, 18)
+            ws.autofilter(HEADER_ROW, 0, HEADER_ROW, n_cols - 1)
+
+            is_gt = add_gt and len(out_df) > 0
+            for row_i, row_vals in enumerate(out_df.itertuples(index=False, name=None)):
+                fmt = total_fmt if (is_gt and row_i == len(out_df) - 1) else data_fmt
+                for col_i, val in enumerate(row_vals):
+                    cell_val = "" if (val is None or (isinstance(val, float) and np.isnan(val))) else val
+                    ws.write(DATA_START + row_i, col_i, cell_val, fmt)
+
+            for col_i, col_name in enumerate(out_df.columns):
+                col_data = out_df.iloc[:, col_i].fillna("").astype(str)
+                max_len  = max(len(str(col_name)), col_data.str.len().max() if len(col_data) else 0)
+                ws.set_column(col_i, col_i, min(int(max_len) + 3, 42))
+
+    return buf.getvalue()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SUGGESTION ENGINE
@@ -716,7 +973,7 @@ def render_suggestion_panel(tag_list: list[str], panel_key: str) -> None:
         st.markdown(
             '<div style="font-family:\'JetBrains Mono\',monospace;font-size:.65rem;'
             'font-weight:700;letter-spacing:.1em;text-transform:uppercase;'
-            'color:var(--amber);margin-bottom:.6rem;">⚙️ By System Code</div>',
+            'color:var(--amber);margin-bottom:.6rem;"> By System Code</div>',
             unsafe_allow_html=True)
         if not sc_sugg:
             st.caption("No system-code-level gains found.")
@@ -898,16 +1155,21 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # STICKY HEADER
 # ─────────────────────────────────────────────────────────────────────────────
-_hdr_logo = f'<img src="data:image/png;base64,{_logo_b64()}" style="height:36px;margin-right:.7rem;vertical-align:middle;border-radius:4px;">' if _logo_b64() else ""
+_hdr_logo = f'<img src="data:image/png;base64,{_logo_b64()}" style="height:34px;border-radius:6px;flex-shrink:0;">' if _logo_b64() else ""
 st.markdown(f"""
 <div class="sticky-header-wrap">
-  <div style="display:flex;align-items:center;gap:.9rem;margin-bottom:.35rem;">
+  <div style="display:flex;align-items:center;gap:1rem;">
     {_hdr_logo}
-    <span style="font-family:'JetBrains Mono',monospace;font-size:1.2rem;
-                 font-weight:700;color:var(--t0);letter-spacing:-.01em;">
-      Smart Material Estimator</span>
-    <span style="font-size:.72rem;color:var(--t4);letter-spacing:.03em;">
-      System-code level · Cascading allocation · Priority-based</span>
+    <div style="display:flex;flex-direction:column;gap:.1rem;">
+      <span style="font-family:'JetBrains Mono',monospace;font-size:1.05rem;font-weight:700;color:var(--t0);letter-spacing:-.01em;line-height:1.2;">
+        Smart Material Estimator</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:.58rem;color:var(--t5);letter-spacing:.08em;text-transform:uppercase;">
+        System-code level · Cascading allocation · Priority-based</span>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:.6rem;flex-shrink:0;">
+      <span style="font-family:'JetBrains Mono',monospace;font-size:.58rem;color:var(--t5);letter-spacing:.1em;text-transform:uppercase;background:var(--amber-bg);border:1px solid rgba(245,158,11,.2);padding:.15rem .5rem;border-radius:99px;">v3</span>
+      <span title="System online" style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 7px var(--green-glow);"></span>
+    </div>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -926,6 +1188,7 @@ tab0, tab1, tab2, tab3, tab4, tab_consume, tab5, tab_master = st.tabs([
 ])
 
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 0 · DASHBOARD (Project Overview + Material Requirement & Procurement)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -942,11 +1205,11 @@ with tab0:
     st.markdown('<div class="sec-hdr">🎛 Filter</div>', unsafe_allow_html=True)
     df1, df2_col, df3, df4 = st.columns(4)
     with df1:
-        sel_locations = st.multiselect("📍 Location", options=LOCATION_ORDER,
+        sel_locations = st.multiselect(" Location", options=LOCATION_ORDER,
                                         default=LOCATION_ORDER, key="dash_loc")
     with df2_col:
         all_types_d = sorted(eq_master["Type"].str.strip().unique().tolist())
-        sel_types = st.multiselect("🏷 Type", options=all_types_d,
+        sel_types = st.multiselect(" Type", options=all_types_d,
                                     default=all_types_d, key="dash_type")
     with df3:
         all_codes_d = (
@@ -955,12 +1218,12 @@ with tab0:
         )
         code_opts_d = [f"Code {r.Lining_System_Code} – {r.Lining_System_Short_Name}"
                        for _, r in all_codes_d.iterrows()]
-        sel_codes_raw = st.multiselect("⚙️ System Code", options=code_opts_d,
+        sel_codes_raw = st.multiselect(" System Code", options=code_opts_d,
                                         default=code_opts_d, key="dash_code")
         sel_codes = [c.split(" – ")[0].replace("Code ","").strip() for c in sel_codes_raw]
     with df4:
         all_desc_d = sorted(eq_master["Substrate"].dropna().unique().tolist())
-        sel_substrate = st.multiselect("📋 Substrate", options=all_desc_d,
+        sel_substrate = st.multiselect(" Substrate", options=all_desc_d,
                                         default=all_desc_d, key="dash_substrate")
 
     # ── Apply filters ─────────────────────────────────────────────────────────
@@ -1018,20 +1281,43 @@ with tab0:
 
         # KPI strip
         k1,k2,k3,k4,k5,k6,k7 = st.columns(7)
-        k1.metric("Equipment", len(filtered_tags),
-                  help="Equipment tags matching current filter selection.")
-        k2.metric("Total SQM", f"{proj_sqm:,.1f}",
-                  help="Remaining surface area (m²) after deducting daily consumption entries.")
-        k3.metric("Available Material Coverage", f"{can_sqm:,.1f}  ({f_cov:.0f}%)",
-                  help="SQM coverable with currently available material = Total SQM × Coverage %.")
-        k4.metric("SQM Deficit", f"{short_sqm:,.1f}",
-                  help="SQM we cannot complete due to material shortfalls = Total − Achievable.")
-        k5.metric("Overall Coverage", f"{f_cov:.1f}%", delta=f"{f_cov-100:.1f}%",
-                  help="Allocated Qty ÷ Demand Qty × 100 across all filtered materials.")
-        k6.metric("Total Shortfall", f"{f_total_short:,.0f}",
-                  help="Sum of all material units short (Demand − Available, clipped at 0).")
-        k7.metric("Critical (<50%)", int((f_demand["Coverage_Pct"]<50).sum()),
-                  help="Materials where Available Qty covers less than 50% of total demand.")
+        _dd_equip_df = filtered_eq[["Equipment_Tag_No.","Name","Location","Type","Substrate"]].reset_index(drop=True)
+        _dd_sqm_df   = (sqm_ref[sqm_ref["Equipment_Tag_No."].isin(filtered_tags) &
+                                sqm_ref["Lining_System_Code"].isin(sel_codes)]
+                        [["Equipment_Tag_No.","Lining_System_Code","Total_SQM"]]
+                        .sort_values("Total_SQM", ascending=False).reset_index(drop=True))
+        _dd_cov_df   = f_demand[["Material_Code","Material_Name","Demand_Qty","Available_Qty","Coverage_Pct"]].sort_values("Coverage_Pct").reset_index(drop=True)
+        _dd_def_df   = f_demand[f_demand["Shortfall"]>0][["Material_Code","Material_Name","Demand_Qty","Available_Qty","Shortfall"]].sort_values("Shortfall", ascending=False).reset_index(drop=True)
+        _dd_crit_df  = f_demand[f_demand["Coverage_Pct"]<50][["Material_Code","Material_Name","Demand_Qty","Available_Qty","Coverage_Pct"]].sort_values("Coverage_Pct").reset_index(drop=True)
+        with k1:
+            dbl_click_metric("Equipment", str(len(filtered_tags)), "t0_equip",
+                "Equipment List", _dd_equip_df,
+                help_text="Equipment tags matching current filter selection.")
+        with k2:
+            dbl_click_metric("Total SQM", f"{proj_sqm:,.1f}", "t0_sqm",
+                "SQM by Equipment & System Code", _dd_sqm_df,
+                help_text="Remaining surface area (m²) after deducting daily consumption entries.")
+        with k3:
+            dbl_click_metric("Available Coverage SQM", f"{can_sqm:,.1f}  ({f_cov:.0f}%)", "t0_cov_sqm",
+                "Material Coverage Breakdown", _dd_cov_df,
+                help_text="SQM coverable with currently available material = Total SQM × Coverage %.")
+        with k4:
+            dbl_click_metric("SQM Deficit", f"{short_sqm:,.1f}", "t0_deficit",
+                "Materials with Shortfall", _dd_def_df,
+                help_text="SQM we cannot complete due to material shortfalls = Total − Achievable.")
+        with k5:
+            dbl_click_metric("Overall Coverage", f"{f_cov:.1f}%", "t0_ov_cov",
+                "Coverage by Material", _dd_cov_df,
+                delta=f"{f_cov-100:.1f}%",
+                help_text="Allocated Qty ÷ Demand Qty × 100 across all filtered materials.")
+        with k6:
+            dbl_click_metric("Shortfall SQM", f"{short_sqm:,.1f}", "t0_short_sqm",
+                "Materials with Shortfall", _dd_def_df,
+                help_text="SQM that cannot be completed due to material shortfalls = Total SQM − Available Material Coverage SQM.")
+        with k7:
+            dbl_click_metric("Critical (<50%)", str(int((f_demand["Coverage_Pct"]<50).sum())), "t0_critical",
+                "Critical Materials (Coverage < 50%)", _dd_crit_df,
+                help_text="Materials where Available Qty covers less than 50% of total demand.")
         st.markdown("<br>", unsafe_allow_html=True)
 
         row1a, row1b = st.columns([1,1.6], gap="large")
@@ -1158,7 +1444,7 @@ with tab0:
         row2a, row2b = st.columns(2, gap="large")
 
         with row2a:
-            st.markdown('<div class="sec-hdr">⚙️ Coverage by System Code (SQM)</div>',
+            st.markdown('<div class="sec-hdr"> Coverage by System Code (SQM)</div>',
                         unsafe_allow_html=True)
             sc_rows = []
             for code in sel_codes:
@@ -1207,10 +1493,10 @@ with tab0:
                 st.plotly_chart(fig_sc, use_container_width=True, key="dash_sc_bar")
 
                 sc_show = sc_df.copy()
-                sc_show.columns = ["Code","Short Name","SQM Total","Available Material Coverage",
+                sc_show.columns = ["Code","Short Name","SQM Total","Available Material Coverage (SQM)",
                                    "SQM Deficit","Coverage %"]
-                sc_show[["SQM Total","Available Material Coverage","SQM Deficit"]] = (
-                    sc_show[["SQM Total","Available Material Coverage","SQM Deficit"]].round(1))
+                sc_show[["SQM Total","Available Material Coverage (SQM)","SQM Deficit"]] = (
+                    sc_show[["SQM Total","Available Material Coverage (SQM)","SQM Deficit"]].round(1))
                 st.dataframe(sc_show,use_container_width=True,hide_index=True,
                              key="dash_sc_tbl")
 
@@ -1296,7 +1582,7 @@ with tab0:
         da, db = st.columns(2)
         with da:
             st.download_button("⬇ Download Material Balance",
-                data=generate_excel_report(tbl_show.reset_index(drop=True), "Material Balance"),
+                data=generate_excel_report(tbl_show.reset_index(drop=True), "Material Balance", color_scheme="dashboard"),
                 file_name="dashboard_material_balance.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
@@ -1310,12 +1596,25 @@ with tab0:
 
         # KPI strip
         p1,p2,p3,p4,p5,p6 = st.columns(6)
-        p1.metric("Equipment",        len(filtered_tags))
-        p2.metric("Total SQM",        f"{proj_sqm:,.1f}")
-        p3.metric("Available Material Coverage", f"{can_sqm:,.1f}  ({f_cov:.0f}%)")
-        p4.metric("SQM Deficit",      f"{short_sqm:,.1f}")
-        p5.metric("Shortfall Units",  f"{f_total_short:,.0f}")
-        p6.metric("After Orders (Net)",f"{f_total_net:,.0f}")
+        _dd_net_df = f_demand[f_demand["Net_Shortfall"]>0][["Material_Code","Material_Name","Demand_Qty","Available_Qty","Ordered_Qty","Net_Shortfall"]].sort_values("Net_Shortfall", ascending=False).reset_index(drop=True)
+        with p1:
+            dbl_click_metric("Equipment", str(len(filtered_tags)), "t0p_equip",
+                "Equipment List", _dd_equip_df)
+        with p2:
+            dbl_click_metric("Total SQM", f"{proj_sqm:,.1f}", "t0p_sqm",
+                "SQM by Equipment & System Code", _dd_sqm_df)
+        with p3:
+            dbl_click_metric("Available Coverage SQM", f"{can_sqm:,.1f}  ({f_cov:.0f}%)", "t0p_cov_sqm",
+                "Material Coverage Breakdown", _dd_cov_df)
+        with p4:
+            dbl_click_metric("SQM Deficit", f"{short_sqm:,.1f}", "t0p_deficit",
+                "Materials with Shortfall", _dd_def_df)
+        with p5:
+            dbl_click_metric("Shortfall Units", f"{f_total_short:,.0f}", "t0p_short",
+                "Materials with Shortfall", _dd_def_df)
+        with p6:
+            dbl_click_metric("After Orders (Net)", f"{f_total_net:,.0f}", "t0p_net",
+                "Materials with Net Shortfall (After Orders)", _dd_net_df)
         st.markdown("<br>", unsafe_allow_html=True)
 
         # Per-location, per-system-code breakdown
@@ -1396,7 +1695,7 @@ with tab0:
                     pc1.metric("System Code", f"Code {code}")
                     pc2.metric("Short Name",  sname)
                     pc3.metric("SQM Total",   f"{code_sqm:,.2f}")
-                    pc4.metric("Available Material Coverage", f"{c_can_sqm:,.2f}")
+                    pc4.metric("Available Material Coverage (SQM)", f"{c_can_sqm:,.2f}")
                     pc5.metric("SQM Deficit",    f"{c_sh_sqm:,.2f}")
 
                     # Table with Available, On Order, Demand, Shortfall, Net Shortfall
@@ -1461,7 +1760,7 @@ with tab0:
         gc1, gc2 = st.columns(2)
         with gc1:
             st.download_button("⬇ Download Grand Procurement Table",
-                data=generate_excel_report(grand_show.reset_index(drop=True), "Grand Procurement Table"),
+                data=generate_excel_report(grand_show.reset_index(drop=True), "Grand Procurement Table", color_scheme="dashboard"),
                 file_name="procurement_grand_total.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
@@ -1473,7 +1772,7 @@ with tab0:
                                     "Demand","Shortfall","NET TO ORDER"]
             if not shortage_net.empty:
                 st.download_button("⬇ Net Order List Only",
-                    data=generate_excel_report(shortage_net.reset_index(drop=True), "Net Order List"),
+                    data=generate_excel_report(shortage_net.reset_index(drop=True), "Net Order List", color_scheme="dashboard"),
                     file_name="net_order_list.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True)
@@ -1490,17 +1789,17 @@ with tab1:
                     unsafe_allow_html=True)
 
         # 3 filter selectors
-        f_loc  = st.multiselect("📍 Location", options=LOCATION_ORDER,
+        f_loc  = st.multiselect(" Location", options=LOCATION_ORDER,
                                  default=[], key="t1_loc",
                                  placeholder="All locations")
         all_types = sorted(eq_master["Type"].str.strip().unique().tolist())
-        f_type = st.multiselect("🏷 Type", options=all_types,
+        f_type = st.multiselect(" Type", options=all_types,
                                  default=[], key="t1_type",
                                  placeholder="All types")
         all_codes_t1 = sorted(
             dm["Lining_System_Code"].unique().tolist(), key=lambda x: int(x))
         f_code = st.multiselect(
-            "⚙️ System Code", options=all_codes_t1,
+            " System Code", options=all_codes_t1,
             format_func=lambda c: f"Code {c} – "
                 f"{dm[dm['Lining_System_Code']==c]['Lining_System_Short_Name'].iloc[0]}",
             default=[], key="t1_code", placeholder="All system codes")
@@ -1712,10 +2011,20 @@ with tab1:
                     expanded=False,
                 ):
                     mi1,mi2,mi3,mi4 = st.columns(4)
-                    mi1.metric("System Code",   code)
-                    mi2.metric("Short Name",    sname)
-                    mi3.metric("Surface Area",  f"{sqm:,.2f} SQM")
-                    mi4.metric("Coverage",      f"{pct:.1f}%")
+                    _t1_mat_dd = mat_rows[["Material_Code","Material_Name","Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_Pct"]].reset_index(drop=True)
+                    _t1_sk = f"t1_sc_{selected_tag}_{code}"
+                    with mi1:
+                        dbl_click_metric("System Code", str(code), f"{_t1_sk}_c",
+                            f"Code {code} — Material Breakdown", _t1_mat_dd)
+                    with mi2:
+                        dbl_click_metric("Short Name", str(sname), f"{_t1_sk}_n",
+                            f"{sname} — Material Breakdown", _t1_mat_dd)
+                    with mi3:
+                        dbl_click_metric("Surface Area", f"{sqm:,.2f} SQM", f"{_t1_sk}_s",
+                            f"Code {code} — Material Breakdown", _t1_mat_dd)
+                    with mi4:
+                        dbl_click_metric("Coverage", f"{pct:.1f}%", f"{_t1_sk}_p",
+                            f"Code {code} — Coverage Detail", _t1_mat_dd)
                     plotly_mat_table(
                         mat_rows, f"entry_{selected_tag}_{code}",
                         height=65 + len(mat_rows)*30
@@ -1789,11 +2098,33 @@ with tab2:
         n_short_m  = alloc_df[alloc_df["Shortfall_Qty"]>0]["Material_Code"].nunique()
 
         k1,k2,k3,k4,k5 = st.columns(5)
-        k1.metric("Equipment",       len(session_tags))
-        k2.metric("Materials",       n_mats)
-        k3.metric("Need to Order",   n_short_m)
-        k4.metric("Total Shortfall", f"{tot_short:,.1f}")
-        k5.metric("Overall Coverage",f"{ov_pct:.1f}%")
+        _t2_equip_dd = pd.DataFrame({
+            "Equipment Tag": session_tags,
+            "Name":          [tag_name.get(t, t) for t in session_tags],
+            "Location":      [tag_loc.get(t, "—") for t in session_tags],
+        })
+        _t2_mats_dd  = (alloc_df.groupby(["Material_Code","Material_Name"], as_index=False)
+                        [["Demand_Qty","Allocated_Qty","Shortfall_Qty"]].sum()
+                        .sort_values("Material_Code").reset_index(drop=True))
+        _t2_mats_dd["Coverage_%"] = (_t2_mats_dd["Allocated_Qty"] /
+            _t2_mats_dd["Demand_Qty"].replace(0, np.nan) * 100).fillna(100).clip(0,100).round(1)
+        _t2_order_dd = _t2_mats_dd[_t2_mats_dd["Shortfall_Qty"]>0].reset_index(drop=True)
+        _t2_cov_dd   = _t2_mats_dd.sort_values("Coverage_%").reset_index(drop=True)
+        with k1:
+            dbl_click_metric("Equipment", str(len(session_tags)), "t2_equip",
+                "Session Equipment List", _t2_equip_dd)
+        with k2:
+            dbl_click_metric("Materials", str(n_mats), "t2_mats",
+                "Material Demand Summary", _t2_mats_dd)
+        with k3:
+            dbl_click_metric("Need to Order", str(n_short_m), "t2_order",
+                "Materials to Procure", _t2_order_dd)
+        with k4:
+            dbl_click_metric("Total Shortfall", f"{tot_short:,.1f}", "t2_short",
+                "Shortfall Detail", _t2_order_dd)
+        with k5:
+            dbl_click_metric("Overall Coverage", f"{ov_pct:.1f}%", "t2_cov",
+                "Coverage by Material", _t2_cov_dd)
         st.markdown("<br>", unsafe_allow_html=True)
 
         # ── Priority reorder (updates global session_tags) ───────────────────
@@ -1882,11 +2213,23 @@ with tab2:
                         unsafe_allow_html=True)
 
                     sc1,sc2,sc3,sc4 = st.columns(4)
-                    sc1.metric("Demand",    f"{c_demand:,.3f}")
-                    sc2.metric("Allocated", f"{c_alloc:,.3f}")
+                    _t2e_dd = code_alloc[["Material_Code","Material_Name","Demand_Qty","Allocated_Qty","Shortfall_Qty"]].reset_index(drop=True)
+                    _t2e_sk = f"t2e_{tag}_{code}"
+                    with sc1:
+                        dbl_click_metric("Demand", f"{c_demand:,.3f}", f"{_t2e_sk}_d",
+                            f"Code {code} — {sname}: Material Detail", _t2e_dd)
+                    with sc2:
+                        dbl_click_metric("Allocated", f"{c_alloc:,.3f}", f"{_t2e_sk}_a",
+                            f"Code {code} — {sname}: Material Detail", _t2e_dd)
                     if c_short > 0.001:
-                        sc3.metric("Shortfall", f"{c_short:,.3f}")
-                        sc4.metric("SQM Deficit", f"{c_short_sqm:,.2f}")
+                        with sc3:
+                            dbl_click_metric("Shortfall", f"{c_short:,.3f}", f"{_t2e_sk}_sh",
+                                f"Code {code} — {sname}: Shortfall Detail",
+                                _t2e_dd[_t2e_dd["Shortfall_Qty"]>0].reset_index(drop=True))
+                        with sc4:
+                            dbl_click_metric("SQM Deficit", f"{c_short_sqm:,.2f}", f"{_t2e_sk}_sq",
+                                f"Code {code} — {sname}: Shortfall Detail",
+                                _t2e_dd[_t2e_dd["Shortfall_Qty"]>0].reset_index(drop=True))
                     plotly_mat_table(
                         code_alloc,
                         f"rep_{tag}_{code}",
@@ -2023,14 +2366,14 @@ with tab2:
         d1, d2 = st.columns(2)
         with d1:
             st.download_button("⬇ Full Session Report",
-                               data=generate_excel_report(alloc_df, "Session Full Report"),
+                               data=generate_excel_report(alloc_df, "Session Full Report", color_scheme="session"),
                                file_name="session_full_report.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                use_container_width=True)
         with d2:
             if not shortage_only.empty:
                 st.download_button("⬇ Order List Only",
-                                   data=generate_excel_report(shortage_only, "Order List"),
+                                   data=generate_excel_report(shortage_only, "Order List", color_scheme="session"),
                                    file_name="order_list.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True)
@@ -2126,9 +2469,6 @@ with tab3:
             f'color:var(--t4);">{len(loc_tags_all)} equip</span>'
             f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.75rem;'
             f'color:var(--t3);">{loc_can_sqm:,.1f}/{loc_sqm_total:,.1f} SQM</span>'
-            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.75rem;'
-            f'color:{"#EF4444" if loc_short>0 else "#10B981"};">'
-            f'Shortfall: {loc_short:,.1f}</span>'
             f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.75rem;'
             f'color:var(--t3);">Coverage: {loc_pct:.1f}%</span>'
             f'</div>',
@@ -2288,6 +2628,7 @@ with tab3:
     st.markdown('<div class="sec-hdr">📥 Download Report per Location</div>',
                 unsafe_allow_html=True)
 
+    _all_loc_sheets = []
     dl_loc_cols = st.columns(len(LOCATION_ORDER))
     for _dl_col, _loc_dl in zip(dl_loc_cols, LOCATION_ORDER):
         _loc_tags_dl = st.session_state.loc_order.get(
@@ -2312,13 +2653,32 @@ with tab3:
             "Allocated_Qty", "Shortfall_Qty", "Fulfillment_Pct",
         ]
         _export_df = _loc_report[[c for c in _export_cols if c in _loc_report.columns]]
+        _loc_cs = _LOC_COLOR_MAP.get(_loc_dl, "dashboard")
+        _all_loc_sheets.append({
+            "name":            _loc_dl[:31],
+            "df":              _export_df,
+            "title":           f"Location Report — {_loc_dl}",
+            "color_scheme":    _loc_cs,
+            "add_grand_total": True,
+        })
         _dl_col.download_button(
             label=f"⬇ {_loc_dl}",
-            data=generate_excel_report(_export_df, f"Location Report – {_loc_dl}"),
+            data=generate_excel_report(_export_df, f"Location Report – {_loc_dl}",
+                                       color_scheme=_loc_cs),
             file_name=f"location_report_{_loc_dl.replace(' ', '_')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
             key=f"dl_loc_{_loc_dl}",
+        )
+
+    if _all_loc_sheets:
+        st.download_button(
+            "⬇ All Locations — Combined (Multi-Sheet)",
+            data=generate_multi_sheet_excel(_all_loc_sheets),
+            file_name=f"location_report_all_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="dl_loc_all",
         )
 
     # ── Print Report button ──────────────────────────────────────────────────
@@ -2557,7 +2917,7 @@ with tab4:
                              "Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_Pct"]
                         ].sort_values(["Lining_System_Code","Shortfall_Qty"],
                                       ascending=[True,False]),
-                        f"Execution Plan – {sel_tag}"),
+                        f"Execution Plan – {sel_tag}", color_scheme="execution"),
                     file_name=f"execution_plan_{sel_tag.replace('/','-')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
@@ -2598,7 +2958,7 @@ with tab_consume:
                     eq_master[eq_master["Location"]==ce_loc]["Type"].dropna().unique().tolist())
             else:
                 type_opts = sorted(eq_master["Type"].dropna().unique().tolist())
-            ce_type = st.selectbox("🏷 Type", options=[""] + type_opts,
+            ce_type = st.selectbox(" Type", options=[""] + type_opts,
                                    key="ce_type", label_visibility="visible")
         with col3:
             eq_filter = eq_master.copy()
@@ -2618,7 +2978,7 @@ with tab_consume:
                     for c in code_opts]
             else:
                 code_opts, code_labels = [], []
-            ce_code_raw = st.selectbox("⚙️ System Code", options=[""] + code_labels,
+            ce_code_raw = st.selectbox(" System Code", options=[""] + code_labels,
                                        key="ce_code", label_visibility="visible")
             ce_code = ce_code_raw.split("  –  ")[0].replace("Code ","").strip() if ce_code_raw else ""
 
@@ -2640,11 +3000,22 @@ with tab_consume:
                                if not sqm_row.empty else ce_code)
 
             sc1,sc2,sc3,sc4 = st.columns(4)
-            sc1.metric("System Code",       sname)
-            sc2.metric("Original SQM",      f"{total_sqm_orig:,.2f}")
-            sc3.metric("Already Done SQM",  f"{done_sqm_prev:,.2f}")
-            sc4.metric("Remaining SQM",     f"{remaining_sqm:,.2f}",
-                       help="Remaining = Original − already completed")
+            _consume_rec = recipe[recipe["Lining_System_Code"]==ce_code][["Material_Code","Material_Name","For_1_SQM","UOM"]].copy()
+            _consume_rec["Demand for Remaining SQM"] = (_consume_rec["For_1_SQM"] * remaining_sqm).round(4)
+            _consume_rec = _consume_rec.reset_index(drop=True)
+            with sc1:
+                dbl_click_metric("System Code", str(sname), f"tce_sc_{ce_tag}_{ce_code}",
+                    f"{sname} — Recipe Detail", _consume_rec)
+            with sc2:
+                dbl_click_metric("Original SQM", f"{total_sqm_orig:,.2f}", f"tce_orig_{ce_tag}_{ce_code}",
+                    f"{sname} — Recipe Detail", _consume_rec)
+            with sc3:
+                dbl_click_metric("Already Done SQM", f"{done_sqm_prev:,.2f}", f"tce_done_{ce_tag}_{ce_code}",
+                    f"{sname} — Completed so far ({done_sqm_prev:,.2f} SQM)", _consume_rec)
+            with sc4:
+                dbl_click_metric("Remaining SQM", f"{remaining_sqm:,.2f}", f"tce_rem_{ce_tag}_{ce_code}",
+                    f"{sname} — Material Needed for Remaining {remaining_sqm:,.2f} SQM", _consume_rec,
+                    help_text="Remaining = Original − already completed")
 
             sc_recipe = recipe[recipe["Lining_System_Code"]==ce_code].copy()
             sc_recipe = sc_recipe.merge(
@@ -2923,7 +3294,7 @@ with tab_consume:
                     "⬇ Download Consumption Log",
                     data=generate_excel_report(
                         df_show.drop(columns=["id"], errors="ignore"),
-                        "Daily Consumption Log"),
+                        "Daily Consumption Log", color_scheme="overview"),
                     file_name=f"consumption_log_{date.today()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=False)
@@ -3148,7 +3519,7 @@ with tab_consume:
                     "⬇ Download Receipt Log",
                     data=generate_excel_report(
                         rlog.drop(columns=["id"], errors="ignore"),
-                        "Material Receipt Log"),
+                        "Material Receipt Log", color_scheme="overview"),
                     file_name=f"receipt_log_{date.today()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_receipt_log")
@@ -3237,19 +3608,19 @@ with tab5:
     st.markdown('<div class="sec-hdr">🎛 Filters</div>', unsafe_allow_html=True)
     ff1,ff2,ff3,ff4 = st.columns(4)
     with ff1:
-        f_loc_ov = st.multiselect("📍 Location",
+        f_loc_ov = st.multiselect(" Location",
             options=LOCATION_ORDER, default=LOCATION_ORDER, key="ov_loc")
     with ff2:
         type_opts_ov = sorted(display_master["Type"].dropna().unique().tolist())
-        f_type_ov = st.multiselect("🏷 Type",
+        f_type_ov = st.multiselect(" Type",
             options=type_opts_ov, default=type_opts_ov, key="ov_type")
     with ff3:
         codes_ov = sorted(display_master["System Code"].unique().tolist(), key=int)
-        f_code_ov = st.multiselect("⚙️ System Code",
+        f_code_ov = st.multiselect(" System Code",
             options=codes_ov, default=codes_ov, key="ov_code")
     with ff4:
         status_opts = ["All","Fully Ready (100%)","Partial (50-99%)","Blocked (<50%)"]
-        f_status_ov = st.selectbox("📊 Status", options=status_opts, key="ov_status")
+        f_status_ov = st.selectbox(" Status", options=status_opts, key="ov_status")
 
     # Apply filters
     filtered_master = display_master[
@@ -3272,19 +3643,45 @@ with tab5:
     # ── Dynamic summary KPIs ─────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     ov1,ov2,ov3,ov4,ov5,ov6 = st.columns(6)
-    ov1.metric("Rows (filtered)",    len(filtered_master),
-               help="Number of (Equipment, System Code) pairs in current filter.")
-    ov2.metric("Total SQM",          f'{filtered_master["Total SQM"].sum():,.1f}',
-               help="Sum of original SQM for filtered rows.")
-    ov3.metric("Already Done SQM",           f'{filtered_master["Already Done SQM"].sum():,.1f}',
-               help="SQM already completed (from daily consumption entries).")
-    ov4.metric("Remaining SQM",      f'{filtered_master["Remaining SQM"].sum():,.1f}',
-               help="SQM still to be completed = Total − Done.")
-    ov5.metric("Total Shortfall Qty",f'{filtered_master["Shortfall Qty"].sum():,.0f}',
-               help="Total material units short across all filtered rows.")
-    ov6.metric("Avg Coverage",
-               f'{filtered_master["Fulfil %"].mean():.1f}%' if len(filtered_master) else "0%",
-               help="Average fulfillment % across filtered (Equipment, System Code) pairs.")
+    _ov_sqm_deficit = (
+        filtered_master["Remaining SQM"] *
+        (1 - filtered_master["Fulfil %"].clip(0, 100) / 100)
+    ).sum()
+    _t5_base_cols = ["Equipment","Sys_Code","Total SQM","Already Done SQM","Remaining SQM","Fulfil %"]
+    _t5_base = filtered_master[[c for c in _t5_base_cols if c in filtered_master.columns]].copy()
+    _t5_short_dd = _t5_base[filtered_master["Fulfil %"]<100].copy()
+    _t5_short_dd["Shortfall SQM"] = (_t5_short_dd["Remaining SQM"] * (1 - _t5_short_dd["Fulfil %"].clip(0,100)/100)).round(2)
+    _t5_short_dd = _t5_short_dd.sort_values("Shortfall SQM", ascending=False).reset_index(drop=True)
+    with ov1:
+        dbl_click_metric("Rows (filtered)", str(len(filtered_master)), "t5_rows",
+            "All Filtered Rows", _t5_base.reset_index(drop=True),
+            help_text="Number of (Equipment, System Code) pairs in current filter.")
+    with ov2:
+        dbl_click_metric("Total SQM", f'{filtered_master["Total SQM"].sum():,.1f}', "t5_sqm",
+            "Total SQM by Row (sorted desc)",
+            _t5_base.sort_values("Total SQM", ascending=False).reset_index(drop=True),
+            help_text="Sum of original SQM for filtered rows.")
+    with ov3:
+        dbl_click_metric("Already Done SQM", f'{filtered_master["Already Done SQM"].sum():,.1f}', "t5_done",
+            "Completed SQM by Row (sorted desc)",
+            _t5_base.sort_values("Already Done SQM", ascending=False).reset_index(drop=True),
+            help_text="SQM already completed (from daily consumption entries).")
+    with ov4:
+        dbl_click_metric("Remaining SQM", f'{filtered_master["Remaining SQM"].sum():,.1f}', "t5_rem",
+            "Remaining SQM by Row (sorted desc)",
+            _t5_base.sort_values("Remaining SQM", ascending=False).reset_index(drop=True),
+            help_text="SQM still to be completed = Total − Done.")
+    with ov5:
+        dbl_click_metric("Shortfall SQM", f"{_ov_sqm_deficit:,.1f}", "t5_short",
+            "Rows with SQM Shortfall (sorted desc)", _t5_short_dd,
+            help_text="SQM that cannot be completed across filtered rows, weighted by material fulfillment %.")
+    with ov6:
+        dbl_click_metric("Avg Coverage",
+            f'{filtered_master["Fulfil %"].mean():.1f}%' if len(filtered_master) else "0%",
+            "t5_avg_cov",
+            "Coverage by Row (sorted asc)",
+            _t5_base.sort_values("Fulfil %").reset_index(drop=True),
+            help_text="Average fulfillment % across filtered (Equipment, System Code) pairs.")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -3349,13 +3746,25 @@ with tab5:
             expanded=False,
         ):
             m1,m2,m3,m4,m5 = st.columns(5)
-            m1.metric("System Code", f"Code {code}")
-            m2.metric("Short Name",  sname)
-            m3.metric("Total SQM",   f"{sc_sqm:,.2f}")
-            m4.metric("Already Done SQM",    f"{done_sq:,.2f}",
-                      help="SQM completed via Daily Consumption entries.")
-            m5.metric("Available Material Coverage", f"{sc_can:,.2f}  ({sc_cov_avg:.1f}%)",
-                      help="SQM coverable with current available material balance.")
+            _t5sc_dd = sc_mat[["Material_Code","Material_Name","UOM","Available_Qty","Demand_Qty","Shortfall","Coverage_%"]].rename(columns={"Coverage_%":"Coverage %"}).reset_index(drop=True)
+            _t5sc_sk = f"t5sc_{code}"
+            with m1:
+                dbl_click_metric("System Code", f"Code {code}", f"{_t5sc_sk}_c",
+                    f"Code {code} — Material Breakdown", _t5sc_dd)
+            with m2:
+                dbl_click_metric("Short Name", str(sname), f"{_t5sc_sk}_n",
+                    f"{sname} — Material Breakdown", _t5sc_dd)
+            with m3:
+                dbl_click_metric("Total SQM", f"{sc_sqm:,.2f}", f"{_t5sc_sk}_s",
+                    f"Code {code} — Material Breakdown", _t5sc_dd)
+            with m4:
+                dbl_click_metric("Already Done SQM", f"{done_sq:,.2f}", f"{_t5sc_sk}_d",
+                    f"Code {code} — Material Breakdown", _t5sc_dd,
+                    help_text="SQM completed via Daily Consumption entries.")
+            with m5:
+                dbl_click_metric("Coverage SQM", f"{sc_can:,.2f}  ({sc_cov_avg:.1f}%)", f"{_t5sc_sk}_p",
+                    f"Code {code} — Material Breakdown", _t5sc_dd,
+                    help_text="SQM coverable with current available material balance.")
 
             mat_show = sc_mat[["Material_Code","Material_Name","UOM",
                                 "Available_Qty","Demand_Qty","Shortfall",
@@ -3385,7 +3794,7 @@ with tab5:
     with dl1:
         st.download_button(
             "⬇ Download Filtered Master Table",
-            data=generate_excel_report(filtered_master, f"Total Overview — {date.today()}"),
+            data=generate_excel_report(filtered_master, f"Total Overview — {date.today()}", color_scheme="overview"),
             file_name=f"total_overview_{date.today()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True)
@@ -3396,7 +3805,7 @@ with tab5:
             conn.close()
             st.download_button(
                 "⬇ Download Full Consumption Log",
-                data=generate_excel_report(full_log, "Full Consumption Log"),
+                data=generate_excel_report(full_log, "Full Consumption Log", color_scheme="overview"),
                 file_name=f"consumption_log_full_{date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
@@ -3738,16 +4147,29 @@ with tab_master:
         view_df_display = view_df_display.drop(columns=_sl_db_cols, errors="ignore")
         view_df_display.insert(0, "Sl. No.", range(1, len(view_df_display) + 1))
 
-        # ── Global search filter ──────────────────────────────────────────────
-        _md_search = st.text_input(
-            "🔍 Search table...", key=f"md_search_{db_table}",
-            placeholder="Type to filter all columns…")
-        if _md_search:
-            _mask = view_df_display.apply(
-                lambda col: col.astype(str).str.contains(_md_search, case=False, na=False)
-            ).any(axis=1)
-            view_df_display = view_df_display[_mask].reset_index(drop=True)
-            view_df_display["Sl. No."] = range(1, len(view_df_display) + 1)
+        # ── Search filter ─────────────────────────────────────────────────────
+        _search_cols = [c for c in view_df_display.columns if c not in ("Sl. No.", "☐ Select")]
+        _srch1, _srch2 = st.columns([2, 1])
+        with _srch1:
+            _md_search = st.text_input(
+                "🔍 Search table...", key=f"md_search_{db_table}",
+                placeholder="Type to filter…")
+        with _srch2:
+            _md_col = st.selectbox(
+                "in column", options=["All columns"] + _search_cols,
+                key=f"md_col_{db_table}", label_visibility="visible")
+        if _md_search.strip():
+            if _md_col == "All columns":
+                _mask = view_df_display[_search_cols].apply(
+                    lambda col: col.astype(str).str.contains(
+                        _md_search.strip(), case=False, na=False)
+                ).any(axis=1)
+            else:
+                _mask = view_df_display[_md_col].astype(str).str.contains(
+                    _md_search.strip(), case=False, na=False)
+            view_df_display = view_df_display[_mask]
+        view_df_display = view_df_display.reset_index(drop=True)
+        view_df_display["Sl. No."] = range(1, len(view_df_display) + 1)
 
         # Add checkbox column for bulk delete
         view_df_display.insert(0, "☐ Select", False)
@@ -3848,7 +4270,8 @@ with tab_master:
             f"⬇ Download {md_table_sel} Table",
             data=generate_excel_report(
                 view_df_display.drop(columns=["Sl. No.", "☐ Select"], errors="ignore"),
-                f"{md_table_sel} — Smart Material Estimator"),
+                f"{md_table_sel} — Smart Material Estimator",
+                color_scheme=_TABLE_COLOR_MAP.get(db_table, "dashboard")),
             file_name=f"{db_table}_export_{date.today()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"dl_{db_table}",
