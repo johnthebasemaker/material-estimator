@@ -21,7 +21,64 @@ CREATE TABLE IF NOT EXISTS equipment (id INTEGER PRIMARY KEY AUTOINCREMENT, equi
 CREATE TABLE IF NOT EXISTS sqm_progress (equipment_tag TEXT NOT NULL, lining_system_code TEXT NOT NULL, original_sqm REAL NOT NULL DEFAULT 0, done_sqm REAL NOT NULL DEFAULT 0, PRIMARY KEY (equipment_tag, lining_system_code));
 CREATE TABLE IF NOT EXISTS consumption_log (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_date TEXT NOT NULL, equipment_tag TEXT NOT NULL, lining_system_code TEXT NOT NULL, sqm_completed REAL NOT NULL DEFAULT 0, material_code TEXT NOT NULL, expected_qty REAL, consumed_qty REAL NOT NULL DEFAULT 0, submitted_at TEXT DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS receipt_log (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_date TEXT NOT NULL, material_code TEXT NOT NULL, received_qty REAL NOT NULL DEFAULT 0, submitted_at TEXT DEFAULT (datetime('now')), FOREIGN KEY (material_code) REFERENCES inventory(material_code));
+CREATE TABLE IF NOT EXISTS draft_consumption (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_key         TEXT    NOT NULL,
+    entry_date          TEXT    NOT NULL,
+    equipment_tag       TEXT    NOT NULL,
+    lining_system_code  TEXT    NOT NULL,
+    lining_system_name  TEXT,
+    sqm_completed       REAL    NOT NULL DEFAULT 0,
+    material_code       TEXT    NOT NULL,
+    material_name       TEXT,
+    uom                 TEXT,
+    expected_qty        REAL,
+    actual_qty          REAL    NOT NULL DEFAULT 0,
+    effective_qty       REAL,
+    variance_pct        REAL,
+    variance_status     TEXT,
+    notes               TEXT,
+    added_at            TEXT    DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS orders_log (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id            TEXT    NOT NULL,
+    order_date          TEXT    NOT NULL,
+    generated_by        TEXT    DEFAULT 'Smart Material Estimator',
+    generation_source   TEXT,
+    source_detail       TEXT,
+    material_code       TEXT    NOT NULL,
+    material_name       TEXT,
+    uom                 TEXT,
+    ordered_qty         REAL    NOT NULL DEFAULT 0,
+    fulfilled_qty       REAL    NOT NULL DEFAULT 0,
+    status              TEXT    DEFAULT 'Pending',
+    receipt_ids         TEXT,
+    notes               TEXT,
+    submitted_at        TEXT    DEFAULT (datetime('now'))
+);
 """
+
+
+def _migrate_existing_db(conn):
+    """Apply non-destructive migrations to an existing database."""
+    cur = conn.cursor()
+    # Add order_id column to receipt_log if missing
+    existing = {r[1].lower() for r in cur.execute("PRAGMA table_info(receipt_log)").fetchall()}
+    if "order_id" not in existing:
+        cur.execute("ALTER TABLE receipt_log ADD COLUMN order_id TEXT")
+        print("  [+] Migrated receipt_log: added order_id column")
+    # Add lining_system_name and variance columns to consumption_log if missing
+    cl_cols = {r[1].lower() for r in cur.execute("PRAGMA table_info(consumption_log)").fetchall()}
+    for col, dtype in [("lining_system_name", "TEXT"), ("variance_status", "TEXT"), ("variance_pct", "REAL")]:
+        if col not in cl_cols:
+            cur.execute(f"ALTER TABLE consumption_log ADD COLUMN {col} {dtype}")
+            print(f"  [+] Migrated consumption_log: added {col} column")
+    ol_cols = {r[1].lower() for r in cur.execute("PRAGMA table_info(orders_log)").fetchall()}
+    if "pr_number" not in ol_cols:
+        cur.execute("ALTER TABLE orders_log ADD COLUMN pr_number TEXT")
+        print("  [+] Migrated orders_log: added pr_number column")
+    conn.commit()
 
 def dynamic_sync_table(conn, df, table_name, primary_keys):
     """Dynamically adds missing columns to the DB, then upserts data."""
@@ -113,6 +170,7 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _migrate_existing_db(conn)
     
     dynamic_sync_table(conn, df_a, "inventory", ["material_code"])
     dynamic_sync_table(conn, df_b, "recipe", ["id"])

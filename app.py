@@ -15,7 +15,7 @@ from validate_data     import clean_inventory, clean_recipe, clean_equipment
 from allocation_engine import build_demand_matrix
 
 # ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Smart Material Estimator",
+st.set_page_config(page_title="Smart Material Estimator & Planner",
                    page_icon="🏗️", layout="wide",
                    initial_sidebar_state="expanded")
 
@@ -336,6 +336,17 @@ def db_available():
     return os.path.exists(DB_PATH)
 
 
+def _next_order_id(conn) -> str:
+    today = date.today().strftime("%Y%m%d")
+    prefix = f"ORD-{today}-"
+    row = conn.execute(
+        "SELECT order_id FROM orders_log WHERE order_id LIKE ? ORDER BY id DESC LIMIT 1",
+        (prefix + "%",),
+    ).fetchone()
+    n = int(row["order_id"].split("-")[-1]) + 1 if row else 1
+    return f"{prefix}{n:03d}"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA LOADER  (SQLite when available, fallback to Excel)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -474,6 +485,10 @@ INV_ORDERED_INIT = inv.set_index("Material_Code")["Ordered_Qty"].to_dict()
 # ─────────────────────────────────────────────────────────────────────────────
 if "session_tags" not in st.session_state:
     st.session_state.session_tags = []
+
+if "_session_key" not in st.session_state:
+    import uuid as _uuid
+    st.session_state["_session_key"] = str(_uuid.uuid4())
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -946,7 +961,7 @@ def render_suggestion_panel(tag_list: list[str], panel_key: str) -> None:
         st.markdown(
             '<div style="font-family:\'JetBrains Mono\',monospace;font-size:.65rem;'
             'font-weight:700;letter-spacing:.1em;text-transform:uppercase;'
-            'color:var(--amber);margin-bottom:.6rem;">🔩 By Equipment</div>',
+            'color:var(--amber);margin-bottom:.6rem;"> By Equipment</div>',
             unsafe_allow_html=True)
         if not eq_sugg:
             st.caption("No equipment-level gains found.")
@@ -1162,7 +1177,7 @@ st.markdown(f"""
     {_hdr_logo}
     <div style="display:flex;flex-direction:column;gap:.1rem;">
       <span style="font-family:'JetBrains Mono',monospace;font-size:1.05rem;font-weight:700;color:var(--t0);letter-spacing:-.01em;line-height:1.2;">
-        Smart Material Estimator</span>
+        Smart Material Estimator &amp; Planner</span>
       <span style="font-family:'JetBrains Mono',monospace;font-size:.58rem;color:var(--t5);letter-spacing:.08em;text-transform:uppercase;">
         System-code level · Cascading allocation · Priority-based</span>
     </div>
@@ -1178,7 +1193,7 @@ st.markdown(f"""
 # ─────────────────────────────────────────────────────────────────────────────
 tab0, tab1, tab2, tab3, tab4, tab_consume, tab5, tab_master = st.tabs([
     "📊  Dashboard",
-    "🔍  Equipment Entry Selections",
+    "🔍  Selective Equipment Entry",
     "📦  Session Order Report",
     "📍  Location Report",
     "⚙️  Execution Plan",
@@ -1934,7 +1949,7 @@ with tab1:
         if not selected_tag:
             st.markdown("""
             <div style="text-align:center;padding:4rem 1rem;">
-              <div style="font-size:2.5rem;opacity:.12;margin-bottom:.8rem;">🔩</div>
+              <div style="font-size:2.5rem;opacity:.12;margin-bottom:.8rem;"></div>
               <div style="font-family:'JetBrains Mono',monospace;font-size:.75rem;
                           color:var(--t5);letter-spacing:.1em;">
                 SELECT AN EQUIPMENT TAG TO VIEW DETAILS</div></div>""",
@@ -2386,13 +2401,136 @@ with tab2:
 # TAB 3 · LOCATION REPORT
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.markdown('<div class="sec-hdr">📍 All Equipment by Location — Cascading Balance</div>',
-                unsafe_allow_html=True)
-    st.caption("Drag to reorder equipment within each location. Order is independent from the session list.")
+    loc_report_mode = st.radio(
+        "View Mode",
+        ["📍 Location Based", "🌐 All Equipment"],
+        horizontal=True, key="loc_report_mode",
+        label_visibility="collapsed",
+    )
+    st.markdown("<hr>", unsafe_allow_html=True)
 
     # ── Per-location order state (independent from global session_tags) ──────
     if "loc_order" not in st.session_state:
         st.session_state.loc_order = {}
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ALL EQUIPMENT MODE
+    # ══════════════════════════════════════════════════════════════════════════
+    if loc_report_mode == "🌐 All Equipment":
+        st.markdown('<div class="sec-hdr">🌐 All Equipment — Global Cascading Balance</div>',
+                    unsafe_allow_html=True)
+        st.caption("All equipment in file order. Inventory pool is shared globally across all locations.")
+
+        from streamlit_sortables import sort_items as _sort3_all
+
+        if "all_eq_order" not in st.session_state:
+            st.session_state.all_eq_order = eq_master["Equipment_Tag_No."].tolist()
+
+        all_eq_tags = st.session_state.all_eq_order
+
+        # ── Sortable list (static labels only) ───────────────────────────────
+        def _ae_label(i, t):
+            name = eq_master.set_index("Equipment_Tag_No.")["Name"].get(t, t)[:26]
+            loc  = eq_master.set_index("Equipment_Tag_No.")["Location"].get(t, "")
+            sqm  = eq_master.set_index("Equipment_Tag_No.")["Total_SQM"].get(t, 0)
+            return f"#{i+1}  ||  {t}  ||  {name}  ||  {loc}  ||  {sqm:,.1f} SQM"
+
+        _ae_display = [_ae_label(i, t) for i, t in enumerate(all_eq_tags)]
+        _ae_key     = "ae_sort_" + str(len(all_eq_tags))
+        st.caption("⇅ Drag to reorder — order determines cascade priority.")
+        _ae_sorted  = _sort3_all(_ae_display, direction="vertical", key=_ae_key)
+
+        def _ae_parse(label):
+            parts = label.split("  ||  ")
+            return parts[1].strip() if len(parts) > 1 else label.strip()
+
+        _ae_new_order = [_ae_parse(l) for l in _ae_sorted if _ae_parse(l) in all_eq_tags]
+        if len(_ae_new_order) == len(all_eq_tags) and _ae_new_order != st.session_state.all_eq_order:
+            st.session_state.all_eq_order = _ae_new_order
+            st.rerun()
+
+        # ── Cascade allocation across all equipment ───────────────────────────
+        ae_alloc = cascade_allocate(all_eq_tags)
+
+        ae_demand = ae_alloc["Demand_Qty"].sum()
+        ae_alloc_qty = ae_alloc["Allocated_Qty"].sum()
+        ae_short  = ae_alloc["Shortfall_Qty"].sum()
+        ae_pct    = min(100, ae_alloc_qty / ae_demand * 100) if ae_demand > 0 else 100
+        ae_sqm    = sqm_ref["Total_SQM"].sum()
+        ae_can_sqm = round(ae_sqm * min(1.0, ae_pct / 100), 2)
+
+        # KPI strip
+        ae_k1, ae_k2, ae_k3, ae_k4, ae_k5 = st.columns(5)
+        ae_k1.metric("Equipment", str(len(all_eq_tags)))
+        ae_k2.metric("Total SQM", f"{ae_sqm:,.1f}")
+        ae_k3.metric("Available Coverage SQM", f"{ae_can_sqm:,.1f}")
+        ae_k4.metric("SQM Deficit", f"{ae_sqm - ae_can_sqm:,.1f}")
+        ae_k5.metric("Overall Coverage", f"{ae_pct:.1f}%")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Per-equipment expanders ────────────────────────────────────────────
+        st.markdown('<div class="sec-hdr">Per-Equipment Detail</div>', unsafe_allow_html=True)
+        for i, tag in enumerate(all_eq_tags):
+            tag_alloc_ae = ae_alloc[ae_alloc["Equipment_Tag_No."] == tag]
+            t_pct_ae = tag_fulfillment(ae_alloc, tag)
+            t_short_ae = tag_alloc_ae["Shortfall_Qty"].sum()
+            eq_row_ae = eq_master[eq_master["Equipment_Tag_No."] == tag].iloc[0]
+            _t3a_sqm = sqm_ref[sqm_ref["Equipment_Tag_No."] == tag]["Total_SQM"].sum()
+            _t3a_cansqm = round(_t3a_sqm * min(1.0, t_pct_ae / 100), 2)
+            _t3a_dot = "✅" if t_pct_ae >= 100 else "🟠" if t_pct_ae >= 90 else "🟡" if t_pct_ae >= 80 else "🔴"
+            _t3a_type = str(eq_row_ae.get("Type", "") or "").strip()
+            _t3a_desc = str(eq_row_ae.get("Substrate", "") or "").strip()[:20]
+            _t3a_loc  = str(eq_row_ae.get("Location", "") or "").strip()
+            _t3a_meta = "  |  ".join(p for p in [_t3a_type, _t3a_desc] if p and p not in ("nan", "—"))
+            with st.expander(
+                f"{_t3a_dot}  #{i+1}  {tag}  ·  {eq_row_ae['Name']}  ·  {_t3a_meta}  ·  {_t3a_loc}  "
+                f"·  {_t3a_cansqm:,.1f}/{_t3a_sqm:,.1f} SQM  ·  {t_pct_ae:.1f}%",
+                expanded=False,
+            ):
+                for code in sorted(tag_alloc_ae["Lining_System_Code"].unique(), key=lambda x: int(x)):
+                    code_alloc_ae = tag_alloc_ae[tag_alloc_ae["Lining_System_Code"] == code].copy()
+                    sname_ae = code_alloc_ae["Lining_System_Short_Name"].iloc[0]
+                    sqm_ae   = code_alloc_ae["Total_SQM"].iloc[0]
+                    c_pct_ae = syscode_fulfillment(ae_alloc, tag, code)
+                    _, c_can_ae, _ = sqm_can_do(ae_alloc, tag, code)
+                    c_dot_ae = "🟢" if c_pct_ae >= 100 else "🟠" if c_pct_ae >= 90 else "🟡" if c_pct_ae >= 80 else "🔴"
+                    st.markdown(
+                        f'<div class="syscode-block"><div class="syscode-hdr">'
+                        f'<span style="font-size:.85rem;">{c_dot_ae}</span>'
+                        f'<span class="code-badge">Code {code}</span>'
+                        f'<span style="font-size:.8rem;color:var(--t1);">{sname_ae}</span>'
+                        f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.72rem;color:var(--t3);">'
+                        f'{c_can_ae:,.1f}/{sqm_ae:,.1f} SQM</span>'
+                        f'<span style="margin-left:auto;">{fulfil_pill(c_pct_ae)}</span>'
+                        f'</div></div>', unsafe_allow_html=True)
+                    plotly_mat_table(
+                        code_alloc_ae, f"ae_{tag}_{code}",
+                        height=65 + len(code_alloc_ae) * 30,
+                        show_sqm=True, tag=tag, code=code, allocated_label="Available"
+                    )
+                # Add to session
+                if tag in st.session_state.session_tags:
+                    st.markdown('<span style="font-family:\'JetBrains Mono\',monospace;font-size:.7rem;color:#10B981;">✓ In session</span>', unsafe_allow_html=True)
+                else:
+                    if st.button(f"＋ Add {tag} to Session", key=f"aeadd_{tag}"):
+                        st.session_state.session_tags.append(tag)
+                        st.rerun()
+
+        # Smart Reordering Suggestions
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("💡 Smart Reordering Suggestions — All Equipment", expanded=False):
+            render_suggestion_panel(all_eq_tags, "tab3_all")
+
+        # Download
+        st.markdown("<br>", unsafe_allow_html=True)
+        _ae_export = ae_alloc.copy()
+        st.download_button(
+            "⬇ Download All Equipment Report",
+            data=generate_excel_report(_ae_export, "All Equipment — Global Report", color_scheme="overview"),
+            file_name=f"all_equipment_report_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_ae_all",
+        )
 
     from streamlit_sortables import sort_items as _sort3
 
@@ -2402,7 +2540,19 @@ with tab3:
         "TRAIN K":     ("loc-tk","#10B981"),
     }
 
+    if loc_report_mode == "📍 Location Based":
+        st.markdown('<div class="sec-hdr">📍 All Equipment by Location — Cascading Balance</div>',
+                    unsafe_allow_html=True)
+        st.caption("Drag to reorder equipment within each location. Order is independent from the session list.")
+
     for loc in LOCATION_ORDER:
+        # Skip location rendering in All Equipment mode
+        if loc_report_mode != "📍 Location Based":
+            # Still seed loc_order state so it's ready when user switches modes
+            default_loc_order = eq_master[eq_master["Location"]==loc]["Equipment_Tag_No."].tolist()
+            if loc not in st.session_state.loc_order:
+                st.session_state.loc_order[loc] = default_loc_order
+            continue
         # Initialise from file order if not set
         default_loc_order = eq_master[eq_master["Location"]==loc]["Equipment_Tag_No."].tolist()
         if loc not in st.session_state.loc_order:
@@ -2625,12 +2775,14 @@ with tab3:
 
     # ── Per-location Excel downloads ────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="sec-hdr">📥 Download Report per Location</div>',
-                unsafe_allow_html=True)
-
+    if loc_report_mode == "📍 Location Based":
+        st.markdown('<div class="sec-hdr">📥 Download Report per Location</div>',
+                    unsafe_allow_html=True)
     _all_loc_sheets = []
     dl_loc_cols = st.columns(len(LOCATION_ORDER))
     for _dl_col, _loc_dl in zip(dl_loc_cols, LOCATION_ORDER):
+        if loc_report_mode != "📍 Location Based":
+            continue
         _loc_tags_dl = st.session_state.loc_order.get(
             _loc_dl,
             eq_master[eq_master["Location"] == _loc_dl]["Equipment_Tag_No."].tolist()
@@ -2681,39 +2833,40 @@ with tab3:
             key="dl_loc_all",
         )
 
-    # ── Print Report button ──────────────────────────────────────────────────
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="sec-hdr">🖨 Print Location Report</div>',
-                unsafe_allow_html=True)
-    st.markdown("""
-    <button onclick="window.print()"
-        style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
-               font-weight:700;letter-spacing:.08em;text-transform:uppercase;
-               background:#F59E0B;color:#000;border:none;border-radius:4px;
-               padding:.52rem 1.3rem;cursor:pointer;transition:all .15s;">
-        🖨 Print / Save as PDF
-    </button>
-    <style>
-    @media print {
-        [data-testid="stSidebar"], [data-testid="stHeader"],
-        .sticky-header-wrap, [data-testid="stTabs"] > div:first-of-type,
-        button[onclick="window.print()"] { display:none!important; }
-        [data-testid="stExpander"] { break-inside:avoid; }
-        body { background:#fff!important; color:#000!important; }
-    }
-    </style>""", unsafe_allow_html=True)
+    if loc_report_mode == "📍 Location Based":
+        # ── Print Report button ───────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="sec-hdr">🖨 Print Location Report</div>',
+                    unsafe_allow_html=True)
+        st.markdown("""
+        <button onclick="window.print()"
+            style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
+                   font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+                   background:#F59E0B;color:#000;border:none;border-radius:4px;
+                   padding:.52rem 1.3rem;cursor:pointer;transition:all .15s;">
+            🖨 Print / Save as PDF
+        </button>
+        <style>
+        @media print {
+            [data-testid="stSidebar"], [data-testid="stHeader"],
+            .sticky-header-wrap, [data-testid="stTabs"] > div:first-of-type,
+            button[onclick="window.print()"] { display:none!important; }
+            [data-testid="stExpander"] { break-inside:avoid; }
+            body { background:#fff!important; color:#000!important; }
+        }
+        </style>""", unsafe_allow_html=True)
 
-    # ── Smart Reordering Suggestions per location ───────────────────────────
-    st.markdown("<br>", unsafe_allow_html=True)
-    for _loc_sugg in LOCATION_ORDER:
-        _loc_tags_sugg = st.session_state.loc_order.get(
-            _loc_sugg,
-            eq_master[eq_master["Location"]==_loc_sugg]["Equipment_Tag_No."].tolist()
-        )
-        if len(_loc_tags_sugg) < 2:
-            continue
-        with st.expander(f"💡 Smart Reordering Suggestions — {_loc_sugg}", expanded=False):
-            render_suggestion_panel(_loc_tags_sugg, f"tab3_{_loc_sugg}")
+        # ── Smart Reordering Suggestions per location ─────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        for _loc_sugg in LOCATION_ORDER:
+            _loc_tags_sugg = st.session_state.loc_order.get(
+                _loc_sugg,
+                eq_master[eq_master["Location"]==_loc_sugg]["Equipment_Tag_No."].tolist()
+            )
+            if len(_loc_tags_sugg) < 2:
+                continue
+            with st.expander(f"💡 Smart Reordering Suggestions — {_loc_sugg}", expanded=False):
+                render_suggestion_panel(_loc_tags_sugg, f"tab3_{_loc_sugg}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 · EXECUTION PLAN
@@ -2935,7 +3088,7 @@ with tab_consume:
         st.stop()
 
     inv_mode = st.radio(
-        "Mode", ["📅 Consumption", "📦 Receipts"],
+        "Mode", ["📊 Main Inventory", "📅 Consumption", "📦 Receipts", "📋 Ordered"],
         horizontal=True, key="inv_mode", label_visibility="collapsed")
     st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -2950,7 +3103,7 @@ with tab_consume:
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            ce_loc = st.selectbox("📍 Location", options=[""] + LOCATION_ORDER,
+            ce_loc = st.selectbox(" Location", options=[""] + LOCATION_ORDER,
                                   key="ce_loc", label_visibility="visible")
         with col2:
             if ce_loc:
@@ -2965,7 +3118,7 @@ with tab_consume:
             if ce_loc:  eq_filter = eq_filter[eq_filter["Location"]==ce_loc]
             if ce_type: eq_filter = eq_filter[eq_filter["Type"]==ce_type]
             tag_opts = sorted(eq_filter["Equipment_Tag_No."].tolist())
-            ce_tag = st.selectbox("🔩 Equipment Tag", options=[""] + tag_opts,
+            ce_tag = st.selectbox(" Equipment Tag", options=[""] + tag_opts,
                                   format_func=lambda t: "" if t=="" else _eq_label(t),
                                   key="ce_tag", label_visibility="visible")
         with col4:
@@ -3089,8 +3242,24 @@ with tab_consume:
                         placeholder="Weather conditions, issues, remarks…",
                         key="form_notes", height=70)
 
-                    submit_btn = st.form_submit_button(
-                        "✅  Submit Consumption",
+                    # ── Live variance preview (outside form, inside else block) ──
+                    _sqm_preview = st.session_state.get("form_ce_sqm", 0.0)
+                    if _sqm_preview > 0:
+                        for _, _mrow in sc_recipe.iterrows():
+                            _mc_p   = str(_mrow["Material_Code"])
+                            _for1_p = float(_mrow.get("For_1_SQM", 0) or 0)
+                            _exp_p  = round(_for1_p * _sqm_preview, 4)
+                            _act_p  = float(st.session_state.get(f"form_mat_{_mc_p}", 0.0))
+                            _eff_p  = _act_p if _act_p > 0 else _exp_p
+                            if _exp_p > 0:
+                                _var_p = (_eff_p - _exp_p) / _exp_p * 100
+                                if _var_p > 1.0:
+                                    st.warning(f"⚠️ {_mc_p}: Entered {_eff_p:.3f} vs expected {_exp_p:.3f} — **Over Consumption** (+{_var_p:.1f}%)")
+                                elif _var_p < -1.0:
+                                    st.info(f"ℹ️ {_mc_p}: Entered {_eff_p:.3f} vs expected {_exp_p:.3f} — **Less Consumption** ({_var_p:.1f}%)")
+
+                    add_to_grid_btn = st.form_submit_button(
+                        "➕ Add to Grid",
                         use_container_width=False)
 
                 # Clear Form button (outside form)
@@ -3100,71 +3269,202 @@ with tab_consume:
                             del st.session_state[_k]
                     st.rerun()
 
-                # ── DB write ──────────────────────────────────────────────────
-                if submit_btn:
+                # ── Add to Draft Grid ─────────────────────────────────────────
+                if add_to_grid_btn:
                     sqm_val   = st.session_state.get("form_ce_sqm",  0.0)
                     date_val  = st.session_state.get("form_ce_date", date.today())
                     notes_val = st.session_state.get("form_notes",   "")
                     if sqm_val <= 0:
-                        st.error("❌ Enter SQM Completed > 0 before submitting.")
+                        st.error("❌ Enter SQM Completed > 0 before adding to grid.")
                     elif sqm_val > remaining_sqm + 0.001:
                         st.error(f"❌ SQM entered ({sqm_val:.2f} m²) exceeds remaining ({remaining_sqm:.2f} m²). Entry blocked.")
                     else:
-                        # ── Validate material quantities vs available stock ───
-                        _inv_avail = inv.set_index("Material_Code")["Available_Qty"].to_dict()
-                        _mat_errors = []
-                        for mc, vals in mat_inputs.items():
-                            consumed = (vals["actual_input"] if vals["actual_input"] > 0
-                                        else round(vals["for_1_sqm"] * sqm_val, 4))
-                            avail_val = float(_inv_avail.get(mc, 0.0))
-                            if consumed > avail_val + 0.001:
-                                _mat_errors.append(
-                                    f"❌ {mc} ({vals['material_name']}): "
-                                    f"need {consumed:.3f} but only {avail_val:.3f} available.")
-                        if _mat_errors:
-                            for _me in _mat_errors:
-                                st.error(_me)
-                        else:
-                            try:
-                                conn = get_db()
-                                cur  = conn.cursor()
-                                n_updated = 0
-                                for mc, vals in mat_inputs.items():
-                                    expected_qty = round(vals["for_1_sqm"] * sqm_val, 4)
-                                    consumed_qty = (vals["actual_input"]
-                                                    if vals["actual_input"] > 0
-                                                    else expected_qty)
-                                    cur.execute("""
-                                        INSERT INTO consumption_log
-                                          (entry_date, equipment_tag, lining_system_code,
-                                           lining_system_name, sqm_completed, material_code,
-                                           material_name, uom, expected_qty, consumed_qty, notes)
-                                        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                                    """, (str(date_val), ce_tag, ce_code, sname,
-                                          sqm_val, mc, vals["material_name"], vals["uom"],
-                                          expected_qty, consumed_qty, notes_val))
-                                    if consumed_qty > 0:
-                                        cur.execute("""
-                                            UPDATE inventory
-                                            SET available_qty = MAX(0, available_qty - ?)
-                                            WHERE material_code = ?
-                                        """, (consumed_qty, mc))
-                                        n_updated += 1
+                        try:
+                            conn = get_db(); cur = conn.cursor()
+                            _sk = st.session_state["_session_key"]
+                            for mc, vals in mat_inputs.items():
+                                expected_qty = round(vals["for_1_sqm"] * sqm_val, 4)
+                                actual_qty   = float(vals["actual_input"])
+                                effective_qty = actual_qty if actual_qty > 0 else expected_qty
+                                if expected_qty > 0:
+                                    var_pct = round((effective_qty - expected_qty) / expected_qty * 100, 2)
+                                else:
+                                    var_pct = 0.0
+                                if abs(var_pct) < 1.0:
+                                    var_status = "OK"
+                                elif var_pct > 0:
+                                    var_status = "Over Consumption"
+                                else:
+                                    var_status = "Less Consumption"
                                 cur.execute("""
-                                    UPDATE sqm_progress
-                                    SET done_sqm = done_sqm + ?
-                                    WHERE equipment_tag = ? AND lining_system_code = ?
-                                """, (sqm_val, ce_tag, ce_code))
-                                conn.commit()
-                                conn.close()
-                                st.cache_data.clear()
-                                st.success(
-                                    f"✅ {sqm_val:.2f} SQM recorded for {ce_tag} · "
-                                    f"Code {ce_code} ({sname}).  "
-                                    f"{n_updated} material(s) deducted from inventory.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ Database error: {e}")
+                                    INSERT INTO draft_consumption
+                                      (session_key, entry_date, equipment_tag, lining_system_code,
+                                       lining_system_name, sqm_completed, material_code,
+                                       material_name, uom, expected_qty, actual_qty,
+                                       effective_qty, variance_pct, variance_status, notes)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                """, (_sk, str(date_val), ce_tag, ce_code, sname,
+                                      sqm_val, mc, vals["material_name"], vals["uom"],
+                                      expected_qty, actual_qty, effective_qty,
+                                      var_pct, var_status, notes_val))
+                            conn.commit(); conn.close()
+                            st.success(f"✅ {len(mat_inputs)} material(s) added to draft grid for {ce_tag} · Code {ce_code}.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Database error: {e}")
+
+        # ── Draft Consumption Grid ────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="sec-hdr">📋 Draft Consumption Grid — Pending Submission</div>',
+                    unsafe_allow_html=True)
+        _sk = st.session_state["_session_key"]
+        _conn_draft = get_db()
+        _draft_df = pd.read_sql(
+            "SELECT * FROM draft_consumption WHERE session_key = ? ORDER BY added_at",
+            _conn_draft, params=[_sk])
+        _conn_draft.close()
+
+        if _draft_df.empty:
+            st.info("No pending entries. Use 'Add to Grid' above to stage consumption data before submitting.")
+        else:
+            # Colour-code by variance status
+            _draft_show = _draft_df[[
+                "id","entry_date","equipment_tag","lining_system_code","material_code",
+                "material_name","uom","expected_qty","effective_qty","variance_pct","variance_status","notes"
+            ]].copy()
+            _draft_show.insert(0, "☐ Del", False)
+
+            def _style_draft(row):
+                vs = row.get("variance_status","OK")
+                if vs == "Over Consumption":   bg = "rgba(245,158,11,.15)"
+                elif vs == "Less Consumption": bg = "rgba(59,130,246,.12)"
+                else:                          bg = "rgba(16,185,129,.08)"
+                return [f"background-color:{bg}"] * len(row)
+
+            _de_state_key = "draft_ce_editor"
+            st.data_editor(
+                _draft_show.style.apply(_style_draft, axis=1),
+                key=_de_state_key,
+                num_rows="fixed",
+                hide_index=True,
+                use_container_width=True,
+                height=min(500, 55 + len(_draft_show) * 35),
+                column_config={
+                    "id":               st.column_config.NumberColumn("ID", disabled=True),
+                    "☐ Del":            st.column_config.CheckboxColumn("🗑", default=False),
+                    "variance_status":  st.column_config.SelectboxColumn(
+                        "Variance Status",
+                        options=["OK","Over Consumption","Less Consumption"]),
+                },
+            )
+
+            _dg1, _dg2, _dg3 = st.columns([2, 2, 4])
+            with _dg1:
+                if st.button("🗑️ Delete Selected", key="del_draft_rows"):
+                    _de_estate = st.session_state.get(_de_state_key, {})
+                    _de_edits  = _de_estate.get("edited_rows", {})
+                    _del_ids   = [int(_draft_df.iloc[int(i)]["id"])
+                                  for i, ch in _de_edits.items()
+                                  if ch.get("☐ Del", False)]
+                    if _del_ids:
+                        _c = get_db(); _cc = _c.cursor()
+                        for _did in _del_ids:
+                            _cc.execute("DELETE FROM draft_consumption WHERE id=?", (_did,))
+                        _c.commit(); _c.close()
+                        st.cache_data.clear(); st.rerun()
+                    else:
+                        st.warning("Check the 🗑 column on rows you want to delete.")
+            with _dg2:
+                if st.button("🧹 Clear All Draft", key="clear_draft_all"):
+                    _c = get_db()
+                    _c.execute("DELETE FROM draft_consumption WHERE session_key=?", (_sk,))
+                    _c.commit(); _c.close()
+                    st.cache_data.clear(); st.rerun()
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="sec-hdr">✅ Submit All Draft Entries</div>',
+                        unsafe_allow_html=True)
+            if st.button("✅ Submit Consumption", key="submit_draft_btn", type="primary"):
+                try:
+                    _c = get_db(); _cc = _c.cursor()
+                    # Process each draft row
+                    for _, _dr in _draft_df.iterrows():
+                        _cc.execute("""
+                            INSERT INTO consumption_log
+                              (entry_date, equipment_tag, lining_system_code,
+                               lining_system_name, sqm_completed, material_code,
+                               material_name, uom, expected_qty, consumed_qty,
+                               variance_status, variance_pct, notes)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """, (str(_dr["entry_date"]), str(_dr["equipment_tag"]),
+                              str(_dr["lining_system_code"]), str(_dr.get("lining_system_name","")),
+                              float(_dr["sqm_completed"]), str(_dr["material_code"]),
+                              str(_dr.get("material_name","")), str(_dr.get("uom","")),
+                              float(_dr.get("expected_qty") or 0),
+                              float(_dr.get("effective_qty") or 0),
+                              str(_dr.get("variance_status","OK")),
+                              float(_dr.get("variance_pct") or 0),
+                              str(_dr.get("notes",""))))
+                        eff = float(_dr.get("effective_qty") or 0)
+                        if eff > 0:
+                            _cc.execute(
+                                "UPDATE inventory SET available_qty = MAX(0, available_qty - ?) WHERE material_code = ?",
+                                (eff, str(_dr["material_code"])))
+                    # Update sqm_progress for each unique (tag, code) pair
+                    _sqm_updates = _draft_df.groupby(
+                        ["equipment_tag","lining_system_code"], as_index=False
+                    )["sqm_completed"].first()
+                    for _, _sr in _sqm_updates.iterrows():
+                        _cc.execute(
+                            "UPDATE sqm_progress SET done_sqm = done_sqm + ? WHERE equipment_tag=? AND lining_system_code=?",
+                            (float(_sr["sqm_completed"]), str(_sr["equipment_tag"]), str(_sr["lining_system_code"])))
+                    # Delete draft rows
+                    _cc.execute("DELETE FROM draft_consumption WHERE session_key=?", (_sk,))
+                    _c.commit(); _c.close()
+                    st.cache_data.clear()
+
+                    # Generate multi-sheet Excel
+                    _sub_sheets = []
+                    _full_cols = ["entry_date","equipment_tag","lining_system_code",
+                                  "lining_system_name","sqm_completed","material_code",
+                                  "material_name","uom","expected_qty","effective_qty",
+                                  "variance_pct","variance_status","notes"]
+                    _full_export = _draft_df[[c for c in _full_cols if c in _draft_df.columns]].copy()
+                    _full_export.columns = [c.replace("_"," ").title() for c in _full_export.columns]
+                    _full_export = _full_export.rename(columns={"Variance Status": "Variance Status"})
+                    _sub_sheets.append({
+                        "name": "Full Day Summary",
+                        "df":   _full_export,
+                        "title": f"Consumption Summary — {date.today()}",
+                        "color_scheme": "overview",
+                        "add_grand_total": True,
+                    })
+                    for _scode in sorted(_draft_df["lining_system_code"].unique(), key=int):
+                        _sc_rows = _draft_df[_draft_df["lining_system_code"] == _scode]
+                        _sc_sname = str(_sc_rows["lining_system_name"].iloc[0]) if "lining_system_name" in _sc_rows else _scode
+                        _sc_export = _sc_rows[[c for c in _full_cols if c in _sc_rows.columns]].copy()
+                        _sc_export.columns = [c.replace("_"," ").title() for c in _sc_export.columns]
+                        _tab_name = f"Code {_scode}"[:31]
+                        _sub_sheets.append({
+                            "name": _tab_name,
+                            "df":   _sc_export,
+                            "title": f"Code {_scode} — {_sc_sname}",
+                            "color_scheme": "train_j",
+                            "add_grand_total": True,
+                        })
+                    _excel_bytes = generate_multi_sheet_excel(_sub_sheets)
+                    st.success(f"✅ {len(_draft_df)} entries submitted to consumption log.")
+                    st.download_button(
+                        "⬇ Download Consumption Report",
+                        data=_excel_bytes,
+                        file_name=f"consumption_report_{date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_cons_report",
+                    )
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"❌ Database error during submission: {_e}")
 
         # ── Consumption History ───────────────────────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)
@@ -3302,7 +3602,7 @@ with tab_consume:
     # ═══════════════════════════════════════════════════════════════════════════
     # RECEIPTS MODE
     # ═══════════════════════════════════════════════════════════════════════════
-    else:
+    elif inv_mode == "📦 Receipts":
         st.markdown('<div class="sec-hdr">📦 Record Material Receipt — New Stock Received</div>',
                     unsafe_allow_html=True)
         st.caption("Log when new materials arrive on site. "
@@ -3330,6 +3630,25 @@ with tab_consume:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
+        # ── Order ID selector — filtered to open orders for the selected material ─
+        _rc_open_conn = get_db()
+        if rc_mat:
+            _rc_open_orders = pd.read_sql(
+                "SELECT DISTINCT order_id FROM orders_log "
+                "WHERE material_code = ? "
+                "  AND status != 'Fulfilled' "
+                "  AND (ordered_qty - fulfilled_qty) > 0 "
+                "ORDER BY id DESC",
+                _rc_open_conn, params=[rc_mat])
+        else:
+            _rc_open_orders = pd.DataFrame(columns=["order_id"])
+        _rc_open_conn.close()
+        _rc_order_opts = ["— None —"] + _rc_open_orders["order_id"].tolist()
+        _rc_sel_order  = st.selectbox(
+            "🔗 Link to Order ID (Optional)",
+            options=_rc_order_opts, key="rc_order_id",
+            help="Shows only open orders with pending qty for the selected material.")
+
         # ── Receipt form ──────────────────────────────────────────────────────
         with st.form(key="receipt_form", clear_on_submit=False):
             rc1, rc2, rc3 = st.columns(3)
@@ -3344,7 +3663,7 @@ with tab_consume:
 
             # Dynamic extra columns from receipt_log schema
             _RECEIPT_FIXED = {"id","entry_date","material_code","material_name","uom",
-                               "received_qty","notes","submitted_at"}
+                               "received_qty","notes","submitted_at","order_id"}
             _rc_conn = get_db()
             _rc_extra_cols = [(r[1], r[2]) for r in
                               _rc_conn.execute("PRAGMA table_info(receipt_log)").fetchall()
@@ -3380,9 +3699,10 @@ with tab_consume:
 
         # ── DB write ──────────────────────────────────────────────────────────
         if rc_submit:
-            rc_qty_val   = st.session_state.get("rc_qty",   0.0)
-            rc_date_val  = st.session_state.get("rc_date",  date.today())
-            rc_notes_val = st.session_state.get("rc_notes", "")
+            rc_qty_val    = st.session_state.get("rc_qty",      0.0)
+            rc_date_val   = st.session_state.get("rc_date",     date.today())
+            rc_notes_val  = st.session_state.get("rc_notes",    "")
+            rc_order_link = st.session_state.get("rc_order_id", "— None —")
             if not rc_mat:
                 st.error("Please select a material.")
             elif rc_qty_val <= 0:
@@ -3390,13 +3710,16 @@ with tab_consume:
             else:
                 try:
                     conn = get_db(); cur = conn.cursor()
+                    _linked_order = rc_order_link if rc_order_link != "— None —" else None
                     cur.execute("""
                         INSERT INTO receipt_log
                           (entry_date, material_code, material_name,
-                           uom, received_qty, notes)
-                        SELECT ?, ?, material_name, uom, ?, ?
+                           uom, received_qty, notes, order_id)
+                        SELECT ?, ?, material_name, uom, ?, ?, ?
                         FROM inventory WHERE material_code = ?
-                    """, (str(rc_date_val), rc_mat, rc_qty_val, rc_notes_val, rc_mat))
+                    """, (str(rc_date_val), rc_mat, rc_qty_val, rc_notes_val,
+                          _linked_order, rc_mat))
+                    _new_receipt_id = cur.lastrowid
                     # Available_Qty += received; Ordered_Qty -= received (floor 0)
                     cur.execute("""
                         UPDATE inventory
@@ -3404,11 +3727,27 @@ with tab_consume:
                             ordered_qty   = MAX(0, ordered_qty - ?)
                         WHERE material_code = ?
                     """, (rc_qty_val, rc_qty_val, rc_mat))
+                    # Link to order if provided
+                    if _linked_order:
+                        cur.execute("""
+                            UPDATE orders_log
+                            SET fulfilled_qty = fulfilled_qty + ?,
+                                receipt_ids = CASE WHEN receipt_ids IS NULL
+                                    THEN CAST(? AS TEXT)
+                                    ELSE receipt_ids || ',' || CAST(? AS TEXT) END,
+                                status = CASE
+                                    WHEN fulfilled_qty + ? >= ordered_qty THEN 'Fulfilled'
+                                    WHEN fulfilled_qty + ? > 0            THEN 'Partial'
+                                    ELSE 'Pending' END
+                            WHERE order_id = ? AND material_code = ?
+                        """, (rc_qty_val, _new_receipt_id, _new_receipt_id,
+                              rc_qty_val, rc_qty_val, _linked_order, rc_mat))
                     conn.commit(); conn.close()
                     st.cache_data.clear()
                     _mat_nm = inv.set_index("Material_Code")["Material_Name"].get(rc_mat, rc_mat)
+                    _order_msg = f" Linked to Order **{_linked_order}**." if _linked_order else ""
                     st.success(f"✅ Received {rc_qty_val:,.3f} units of {_mat_nm} "
-                               f"added to inventory. Ordered Qty adjusted.")
+                               f"added to inventory. Ordered Qty adjusted.{_order_msg}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
@@ -3524,6 +3863,323 @@ with tab_consume:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_receipt_log")
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MAIN INVENTORY DASHBOARD
+    # ═══════════════════════════════════════════════════════════════════════════
+    elif inv_mode == "📊 Main Inventory":
+        from datetime import timedelta
+        st.markdown('<div class="sec-hdr">📊 Main Inventory Dashboard — Movements by Date Range</div>',
+                    unsafe_allow_html=True)
+
+        _mi_c1, _mi_c2, _mi_c3 = st.columns(3)
+        with _mi_c1:
+            _mi_from = st.date_input("From Date", value=date.today() - timedelta(days=30), key="mi_from")
+        with _mi_c2:
+            _mi_to   = st.date_input("To Date",   value=date.today(), key="mi_to")
+        with _mi_c3:
+            _mi_view = st.radio("Group By", ["By Material", "By System Code"],
+                                horizontal=True, key="mi_view")
+
+        st.markdown("<hr>", unsafe_allow_html=True)
+
+        _mi_conn = get_db()
+        # Receipts in range
+        _mi_recv = pd.read_sql(
+            "SELECT material_code, SUM(received_qty) AS total_received "
+            "FROM receipt_log WHERE entry_date BETWEEN ? AND ? GROUP BY material_code",
+            _mi_conn, params=[str(_mi_from), str(_mi_to)])
+        # Consumed in range
+        _mi_cons = pd.read_sql(
+            "SELECT material_code, SUM(consumed_qty) AS total_consumed "
+            "FROM consumption_log WHERE entry_date BETWEEN ? AND ? GROUP BY material_code",
+            _mi_conn, params=[str(_mi_from), str(_mi_to)])
+        _mi_conn.close()
+
+        # Build main inventory table
+        _mi_base = inv[["Material_Code","Material_Name","UOM","Available_Qty","Ordered_Qty"]].copy()
+        _mi_base = _mi_base.rename(columns={
+            "Material_Code": "material_code", "Material_Name": "material_name",
+            "UOM": "uom", "Available_Qty": "current_stock", "Ordered_Qty": "ordered_qty"})
+        _mi_base = _mi_base.merge(_mi_recv, on="material_code", how="left")
+        _mi_base = _mi_base.merge(_mi_cons, on="material_code", how="left")
+        _mi_base["total_received"] = _mi_base["total_received"].fillna(0)
+        _mi_base["total_consumed"] = _mi_base["total_consumed"].fillna(0)
+
+        if _mi_view == "By Material":
+            _mi_show = _mi_base.rename(columns={
+                "material_code": "Code", "material_name": "Material Name", "uom": "UOM",
+                "total_received": "Total Receipts", "total_consumed": "Total Consumed",
+                "current_stock": "Current Stock", "ordered_qty": "Ordered Qty"
+            })[["Code","Material Name","UOM","Total Receipts","Total Consumed","Current Stock","Ordered Qty"]]
+
+            def _style_mi(row):
+                stk = row["Current Stock"]
+                if stk <= 0:    bg,tc = "rgba(239,68,68,.12)","#EF4444"
+                elif stk < 50:  bg,tc = "rgba(245,158,11,.12)","#F59E0B"
+                else:           bg,tc = "rgba(16,185,129,.08)","#10B981"
+                styles = [f"background-color:{bg}"] * len(row)
+                styles[list(row.index).index("Current Stock")] = f"background-color:{bg};color:{tc};font-weight:700"
+                return styles
+
+            st.dataframe(
+                _mi_show.style.apply(_style_mi, axis=1).format({
+                    "Total Receipts":"{:,.3f}","Total Consumed":"{:,.3f}",
+                    "Current Stock":"{:,.3f}","Ordered Qty":"{:,.3f}"}),
+                use_container_width=True, hide_index=True,
+                height=60 + len(_mi_show)*35, key="mi_mat_tbl")
+
+            st.download_button("⬇ Download Inventory Dashboard",
+                data=generate_excel_report(_mi_show.reset_index(drop=True),
+                    f"Inventory Dashboard {_mi_from} to {_mi_to}", color_scheme="overview"),
+                file_name=f"inventory_dashboard_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_mi_mat")
+
+        else:  # By System Code
+            _mi_recipe_codes = recipe[["Lining_System_Code","Lining_System_Short_Name","Material_Code"]].copy()
+            _mi_recipe_codes = _mi_recipe_codes.rename(columns={"Material_Code":"material_code"})
+            _mi_merged = _mi_recipe_codes.merge(_mi_base, on="material_code", how="left")
+            _mi_merged["total_received"] = _mi_merged["total_received"].fillna(0)
+            _mi_merged["total_consumed"] = _mi_merged["total_consumed"].fillna(0)
+            _mi_merged["current_stock"]  = _mi_merged["current_stock"].fillna(0)
+
+            for _micode in sorted(_mi_merged["Lining_System_Code"].unique(), key=int):
+                _mi_sc = _mi_merged[_mi_merged["Lining_System_Code"]==_micode]
+                _mi_sn = _mi_sc["Lining_System_Short_Name"].iloc[0]
+                _mi_cov = (_mi_sc["current_stock"].sum() / max(_mi_sc["current_stock"].sum() + _mi_sc["total_consumed"].sum(), 1)) * 100
+                with st.expander(f"Code {_micode} — {_mi_sn}  ·  {len(_mi_sc)} materials  ·  {_mi_cov:.0f}% stock coverage",
+                                 expanded=False):
+                    _mi_sc_show = _mi_sc[["material_code","material_name","uom",
+                                          "total_received","total_consumed","current_stock","ordered_qty"]].copy()
+                    _mi_sc_show.columns = ["Code","Material Name","UOM",
+                                           "Total Receipts","Total Consumed","Current Stock","Ordered Qty"]
+                    st.dataframe(_mi_sc_show.style.format({
+                        "Total Receipts":"{:,.3f}","Total Consumed":"{:,.3f}",
+                        "Current Stock":"{:,.3f}","Ordered Qty":"{:,.3f}"}),
+                        use_container_width=True, hide_index=True,
+                        height=60 + len(_mi_sc_show)*35, key=f"mi_sc_{_micode}")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ORDERED — ORDER MANAGEMENT SYSTEM
+    # ═══════════════════════════════════════════════════════════════════════════
+    elif inv_mode == "📋 Ordered":
+        st.markdown('<div class="sec-hdr">📋 Order Management System</div>',
+                    unsafe_allow_html=True)
+
+        _ord_mode = st.radio(
+            "Generate From",
+            ["📍 Location Needs", "⚙️ System Code Needs", "📜 View Past Orders"],
+            horizontal=True, key="ord_mode",
+        )
+        st.markdown("<hr>", unsafe_allow_html=True)
+
+        # ── Shared: Generate Shortfall DataFrame ─────────────────────────────
+        def _compute_order_shortfalls(tags: list, label: str) -> pd.DataFrame:
+            if not tags:
+                return pd.DataFrame()
+            _alloc = cascade_allocate(tags)
+            _short = (_alloc[_alloc["Shortfall_Qty"] > 0]
+                      .groupby(["Material_Code","Material_Name","UOM"], as_index=False)
+                      ["Shortfall_Qty"].sum())
+            _short = _short.merge(inv[["Material_Code","Available_Qty"]],
+                                  on="Material_Code", how="left")
+            _short["Available_Qty"]   = _short["Available_Qty"].fillna(0)
+            _short["Order Qty"]       = _short["Shortfall_Qty"].round(3)
+            _short["Notes"]           = ""
+            _short["☑ Remove"]        = False
+            _short["Source"]          = label
+            return _short.rename(columns={
+                "Material_Code":"Material Code","Material_Name":"Material Name",
+                "UOM":"UOM","Available_Qty":"Current Stock","Shortfall_Qty":"Shortfall Qty"})
+
+        # ── Location Needs ────────────────────────────────────────────────────
+        if _ord_mode == "📍 Location Needs":
+            _ord_loc_sel = st.selectbox("Select Location",
+                options=["All Locations"] + LOCATION_ORDER, key="ord_loc_sel")
+            if st.button("🔍 Calculate Shortfalls", key="calc_ord_short"):
+                if _ord_loc_sel == "All Locations":
+                    _ord_tags = eq_master["Equipment_Tag_No."].tolist()
+                else:
+                    _ord_tags = eq_master[eq_master["Location"]==_ord_loc_sel]["Equipment_Tag_No."].tolist()
+                _ord_sf = _compute_order_shortfalls(_ord_tags, _ord_loc_sel)
+                st.session_state["_ord_draft"] = _ord_sf.to_dict("records")
+                st.session_state["_ord_source_detail"] = _ord_loc_sel
+
+        # ── System Code Needs ─────────────────────────────────────────────────
+        elif _ord_mode == "⚙️ System Code Needs":
+            _ord_code_opts = sorted(dm["Lining_System_Code"].unique().tolist(), key=int)
+            _ord_code_sel  = st.selectbox("Select System Code", _ord_code_opts,
+                format_func=lambda c: f"Code {c} — {dm[dm['Lining_System_Code']==c]['Lining_System_Short_Name'].iloc[0]}",
+                key="ord_code_sel")
+            if st.button("🔍 Calculate Shortfalls", key="calc_ord_sc_short"):
+                _ord_tags_sc = dm[dm["Lining_System_Code"]==_ord_code_sel]["Equipment_Tag_No."].unique().tolist()
+                _ord_sf_sc = _compute_order_shortfalls(_ord_tags_sc, f"Code {_ord_code_sel}")
+                st.session_state["_ord_draft"] = _ord_sf_sc.to_dict("records")
+                st.session_state["_ord_source_detail"] = f"Code {_ord_code_sel}"
+
+        # ── View Past Orders ──────────────────────────────────────────────────
+        elif _ord_mode == "📜 View Past Orders":
+            _past_conn = get_db()
+            _past_ids  = pd.read_sql(
+                "SELECT DISTINCT order_id, order_date, generation_source, source_detail "
+                "FROM orders_log ORDER BY id DESC", _past_conn)
+            _past_conn.close()
+            if _past_ids.empty:
+                st.info("No orders submitted yet.")
+            else:
+                _sel_ord = st.selectbox("Select Order ID",
+                    _past_ids["order_id"].tolist(), key="view_past_ord")
+                _past_ord_conn = get_db()
+                _ord_detail = pd.read_sql(
+                    "SELECT order_id AS 'Order ID', pr_number AS 'PR#', "
+                    "material_code AS 'Material Code', material_name AS 'Material Name', "
+                    "uom AS UOM, ordered_qty AS 'Ordered Qty', fulfilled_qty AS 'Fulfilled Qty', "
+                    "MAX(0, ordered_qty - fulfilled_qty) AS 'Pending Qty', status AS Status, notes AS Notes "
+                    "FROM orders_log WHERE order_id = ?", _past_ord_conn, params=[_sel_ord])
+                _past_ord_conn.close()
+                if not _ord_detail.empty:
+                    # PR# entry (current value from first row, all rows share same pr_number)
+                    _cur_pr_val = str(_ord_detail["PR#"].iloc[0] or "") if "PR#" in _ord_detail.columns else ""
+                    _pr_c1, _pr_c2 = st.columns([3, 1])
+                    with _pr_c1:
+                        _pr_input = st.text_input(
+                            "🔖 PR# (Purchase Request Number)",
+                            value=_cur_pr_val,
+                            placeholder="Enter official PR number…",
+                            key="pr_input")
+                    with _pr_c2:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("💾 Update PR#", key="update_pr_btn"):
+                            if _pr_input.strip():
+                                _upr_conn = get_db()
+                                _upr_conn.execute(
+                                    "UPDATE orders_log SET pr_number = ? WHERE order_id = ?",
+                                    (_pr_input.strip(), _sel_ord))
+                                _upr_conn.commit(); _upr_conn.close()
+                                st.cache_data.clear()
+                                st.success(f"✅ PR# '{_pr_input.strip()}' saved for {_sel_ord}.")
+                                st.rerun()
+                            else:
+                                st.error("Please enter a PR# value.")
+                    def _style_ord_status(row):
+                        s = row["Status"]
+                        if s == "Fulfilled":  bg,tc = "rgba(16,185,129,.1)","#10B981"
+                        elif s == "Partial":  bg,tc = "rgba(245,158,11,.1)","#F59E0B"
+                        else:                 bg,tc = "rgba(239,68,68,.1)","#EF4444"
+                        styles = [f"background-color:{bg}"] * len(row)
+                        styles[-3] = f"background-color:{bg};color:{tc};font-weight:700"
+                        return styles
+                    st.dataframe(_ord_detail.style.apply(_style_ord_status, axis=1).format({
+                        "Ordered Qty":"{:,.3f}","Fulfilled Qty":"{:,.3f}","Pending Qty":"{:,.3f}"}),
+                        use_container_width=True, hide_index=True, height=60+len(_ord_detail)*35,
+                        key="ord_status_tbl")
+                    st.download_button("⬇ Download Order Status",
+                        data=generate_excel_report(_ord_detail, f"Order Status — {_sel_ord}", color_scheme="execution"),
+                        file_name=f"order_status_{_sel_ord}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_ord_status")
+
+        # ── Editable Order Draft Grid (shared by Location & System Code modes) ─
+        if _ord_mode in ("📍 Location Needs", "⚙️ System Code Needs"):
+            _ord_draft_records = st.session_state.get("_ord_draft", [])
+            if _ord_draft_records:
+                st.markdown('<div class="sec-hdr" style="margin-top:1rem;">✏️ Review & Edit Order List</div>',
+                            unsafe_allow_html=True)
+                st.caption("Edit Order Qty, uncheck ☑ Remove to exclude rows, or add new rows manually.")
+                _ord_draft_df = pd.DataFrame(_ord_draft_records)
+
+                _ord_editor_key = "ord_draft_editor"
+                _ord_edit_df = st.data_editor(
+                    _ord_draft_df,
+                    key=_ord_editor_key,
+                    num_rows="dynamic",
+                    hide_index=True,
+                    use_container_width=True,
+                    height=min(500, 60 + len(_ord_draft_df) * 35),
+                    column_config={
+                        "Material Code":  st.column_config.TextColumn("Material Code"),
+                        "Material Name":  st.column_config.TextColumn("Material Name"),
+                        "UOM":            st.column_config.TextColumn("UOM"),
+                        "Current Stock":  st.column_config.NumberColumn("Current Stock", disabled=True, format="%.3f"),
+                        "Shortfall Qty":  st.column_config.NumberColumn("Shortfall Qty", disabled=True, format="%.3f"),
+                        "Order Qty":      st.column_config.NumberColumn("Order Qty", format="%.3f", step=0.001),
+                        "Notes":          st.column_config.TextColumn("Notes"),
+                        "☑ Remove":       st.column_config.CheckboxColumn("☑ Remove", default=False),
+                        "Source":         st.column_config.TextColumn("Source", disabled=True),
+                    },
+                )
+
+                if st.button("📤 Submit Order", key="submit_ord_btn", type="primary"):
+                    # Read final editor state
+                    _oe_state   = st.session_state.get(_ord_editor_key, {})
+                    _oe_edited  = _oe_state.get("edited_rows", {})
+                    _oe_added   = _oe_state.get("added_rows", [])
+                    _oe_deleted = set(_oe_state.get("deleted_rows", []))
+
+                    # Build final list from original + edits, excluding removed rows
+                    _final_rows = []
+                    for _ri, _row in enumerate(list(_ord_draft_df.itertuples(index=False, name=None))):
+                        if _ri in _oe_deleted:
+                            continue
+                        _row_dict = dict(zip(_ord_draft_df.columns, _row))
+                        if _ri in _oe_edited:
+                            _row_dict.update(_oe_edited[_ri])
+                        if _row_dict.get("☑ Remove", False):
+                            continue
+                        if float(_row_dict.get("Order Qty", 0) or 0) > 0:
+                            _final_rows.append(_row_dict)
+                    for _ar in _oe_added:
+                        if float(_ar.get("Order Qty", 0) or 0) > 0:
+                            _final_rows.append(_ar)
+
+                    if not _final_rows:
+                        st.error("❌ No valid rows with Order Qty > 0. Nothing to submit.")
+                    else:
+                        try:
+                            _oc = get_db()
+                            _oid = _next_order_id(_oc)
+                            _cur = _oc.cursor()
+                            _src_detail = st.session_state.get("_ord_source_detail", "")
+                            _gen_src = "Location" if _ord_mode == "📍 Location Needs" else "System Code"
+                            for _fr in _final_rows:
+                                _cur.execute("""
+                                    INSERT INTO orders_log
+                                      (order_id, order_date, generated_by,
+                                       generation_source, source_detail,
+                                       material_code, material_name, uom,
+                                       ordered_qty, fulfilled_qty, status, notes)
+                                    VALUES (?,?,?,?,?,?,?,?,?,0,'Pending',?)
+                                """, (_oid, str(date.today()),
+                                      "Smart Material Estimator & Planner",
+                                      _gen_src, _src_detail,
+                                      str(_fr.get("Material Code","")),
+                                      str(_fr.get("Material Name","")),
+                                      str(_fr.get("UOM","")),
+                                      float(_fr.get("Order Qty", 0) or 0),
+                                      str(_fr.get("Notes",""))))
+                            _oc.commit(); _oc.close()
+                            st.cache_data.clear()
+                            st.success(f"✅ Order **{_oid}** submitted — {len(_final_rows)} material(s).")
+
+                            # Generate Excel order sheet
+                            _ord_export_cols = ["Material Code","Material Name","UOM","Order Qty","Notes"]
+                            _ord_export = pd.DataFrame([{c: _r.get(c,"") for c in _ord_export_cols}
+                                                        for _r in _final_rows])
+                            _ord_export.insert(0, "Order ID", _oid)
+                            _ord_export.insert(1, "Order Date", str(date.today()))
+                            _ord_export.insert(2, "Generated By", "Smart Material Estimator & Planner")
+                            st.download_button(
+                                f"⬇ Download Order {_oid}",
+                                data=generate_excel_report(_ord_export,
+                                    f"Procurement Order — {_oid}", color_scheme="execution"),
+                                file_name=f"order_{_oid}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="dl_new_order",
+                            )
+                            del st.session_state["_ord_draft"]
+                            st.rerun()
+                        except Exception as _oe:
+                            st.error(f"❌ Database error: {_oe}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 5 · TOTAL OVERVIEW  (Master Filterable Datatable)
@@ -3575,6 +4231,7 @@ with tab5:
     lining_area_ref = equip_sc[
         ["Equipment_Tag_No.","Lining_System_Code","Total_SQM_Original"]
     ].drop_duplicates().rename(columns={"Total_SQM_Original":"Lining_Area_SQM"})
+    lining_area_ref["Lining_Area_SQM"] = lining_area_ref["Lining_Area_SQM"].round(3)
     master = master.merge(lining_area_ref,
                           on=["Equipment_Tag_No.","Lining_System_Code"], how="left")
 
@@ -3653,33 +4310,33 @@ with tab5:
     _t5_short_dd["Shortfall SQM"] = (_t5_short_dd["Remaining SQM"] * (1 - _t5_short_dd["Fulfil %"].clip(0,100)/100)).round(2)
     _t5_short_dd = _t5_short_dd.sort_values("Shortfall SQM", ascending=False).reset_index(drop=True)
     with ov1:
-        dbl_click_metric("Rows (filtered)", str(len(filtered_master)), "t5_rows",
-            "All Filtered Rows", _t5_base.reset_index(drop=True),
+        dbl_click_metric("No. of Items (filtered)", str(len(filtered_master)), "t5_rows",
+            "All Filtered by No. of Items", _t5_base.reset_index(drop=True),
             help_text="Number of (Equipment, System Code) pairs in current filter.")
     with ov2:
         dbl_click_metric("Total SQM", f'{filtered_master["Total SQM"].sum():,.1f}', "t5_sqm",
-            "Total SQM by Row (sorted desc)",
+            "Total SQM by No. of Items (sorted desc)",
             _t5_base.sort_values("Total SQM", ascending=False).reset_index(drop=True),
             help_text="Sum of original SQM for filtered rows.")
     with ov3:
         dbl_click_metric("Already Done SQM", f'{filtered_master["Already Done SQM"].sum():,.1f}', "t5_done",
-            "Completed SQM by Row (sorted desc)",
+            "Completed SQM by No. of Items (sorted desc)",
             _t5_base.sort_values("Already Done SQM", ascending=False).reset_index(drop=True),
             help_text="SQM already completed (from daily consumption entries).")
     with ov4:
         dbl_click_metric("Remaining SQM", f'{filtered_master["Remaining SQM"].sum():,.1f}', "t5_rem",
-            "Remaining SQM by Row (sorted desc)",
+            "Remaining SQM by No. of Items (sorted desc)",
             _t5_base.sort_values("Remaining SQM", ascending=False).reset_index(drop=True),
             help_text="SQM still to be completed = Total − Done.")
     with ov5:
         dbl_click_metric("Shortfall SQM", f"{_ov_sqm_deficit:,.1f}", "t5_short",
-            "Rows with SQM Shortfall (sorted desc)", _t5_short_dd,
+            "by No. of Items with SQM Shortfall (sorted desc)", _t5_short_dd,
             help_text="SQM that cannot be completed across filtered rows, weighted by material fulfillment %.")
     with ov6:
         dbl_click_metric("Avg Coverage",
             f'{filtered_master["Fulfil %"].mean():.1f}%' if len(filtered_master) else "0%",
             "t5_avg_cov",
-            "Coverage by Row (sorted asc)",
+            "Coverage by by No. of Items (sorted asc)",
             _t5_base.sort_values("Fulfil %").reset_index(drop=True),
             help_text="Average fulfillment % across filtered (Equipment, System Code) pairs.")
 
@@ -3700,13 +4357,14 @@ with tab5:
     styled_master = (filtered_master.style
         .apply(_style_master, axis=1)
         .format({
-            "Total SQM":     "{:,.2f}",
-            "Already Done SQM":      "{:,.2f}",
-            "Remaining SQM": "{:,.2f}",
-            "Total Demand":  "{:,.3f}",
-            "Allocated":     "{:,.3f}",
-            "Shortfall Qty": "{:,.3f}",
-            "Fulfil %":      "{:.1f}%",
+            "Total SQM":        "{:,.2f}",
+            "Lining Area SQM":  "{:,.3f}",
+            "Already Done SQM": "{:,.2f}",
+            "Remaining SQM":    "{:,.2f}",
+            "Total Demand":     "{:,.3f}",
+            "Allocated":        "{:,.3f}",
+            "Shortfall Qty":    "{:,.3f}",
+            "Fulfil %":         "{:.1f}%",
         }))
     st.dataframe(styled_master, use_container_width=True, hide_index=True,
                  height=min(700, 50 + len(filtered_master)*35),
@@ -3714,6 +4372,18 @@ with tab5:
 
     # ── Per-System-Code material detail (expandable) ─────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # Sub-metrics for the whole filtered selection
+    _ov_total_sqm   = filtered_master["Total SQM"].sum()
+    _ov_done_sqm    = filtered_master["Already Done SQM"].sum()
+    _ov_pending_sqm = filtered_master["Remaining SQM"].sum()
+    _ov_comp_pct    = (_ov_done_sqm / _ov_total_sqm * 100) if _ov_total_sqm > 0 else 0.0
+    _sm1, _sm2, _sm3, _sm4 = st.columns(4)
+    _sm1.metric("Total SQM",        f"{_ov_total_sqm:,.2f}")
+    _sm2.metric("Already Done SQM", f"{_ov_done_sqm:,.2f}")
+    _sm3.metric("Pending SQM",      f"{_ov_pending_sqm:,.2f}")
+    _sm4.metric("Completion",       f"{_ov_comp_pct:.1f}%")
+
     st.markdown('<div class="sec-hdr">🔬 Material Detail by System Code</div>',
                 unsafe_allow_html=True)
 
