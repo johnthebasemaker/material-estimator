@@ -90,10 +90,10 @@ st.markdown("""
 
 /* ── BASE ── */
 html,body,[class*="css"] { font-family:'Inter',sans-serif!important; background:var(--bg0)!important; color:var(--t1); }
-.main .block-container { padding-top:0!important; padding-bottom:3rem; max-width:1500px; }
+.main .block-container { padding-bottom:1.5rem; margin-top:0!important; max-width:1500px; }
 
 /* ── SIDEBAR ── */
-[data-testid="stSidebar"] { background:var(--bg1)!important; border-right:1px solid var(--border)!important; }
+[data-testid="stSidebar"] { background:var(--bg1)!important; border-right:none!important; box-shadow:4px 0 24px rgba(0,0,0,.18)!important; border-radius:0 var(--r-lg) var(--r-lg) 0!important; }
 [data-testid="stSidebar"] * { font-family:'Inter',sans-serif!important; }
 [data-testid="stSidebar"]::before {
   content:''; display:block; height:3px;
@@ -106,26 +106,160 @@ header[data-testid="stHeader"] { height:0!important; min-height:0!important; pad
 [data-testid="collapsedControl"] { display:flex!important; visibility:visible!important; opacity:1!important; position:fixed!important; top:.45rem!important; left:.5rem!important; z-index:10001!important; }
 [data-testid="stAppViewContainer"] { padding-top:0!important; }
 
-/* ── STICKY HEADER ── */
+/* ── MAIN CONTAINER TOP PADDING (clears fixed sticky header) ── */
+[data-testid="stAppViewBlockContainer"],
+[data-testid="stMainBlockContainer"],
+section.main > div.block-container { padding-top: 78px !important; }
+
+/* ── HAMBURGER ICON (shows when sidebar is COLLAPSED — sits in sticky header, top-left) ── */
+/* Covers BOTH old (`collapsedControl`) and new (`stSidebarCollapsedControl`) Streamlit testids */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarCollapseButton"]:not([data-testid="stSidebar"] *) {
+  position: fixed !important;
+  top: .9rem !important; left: 1rem !important;
+  z-index: 1000001 !important;
+  display: flex !important; visibility: visible !important; opacity: 1 !important;
+  width: 38px !important; height: 38px !important;
+}
+[data-testid="collapsedControl"] button,
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stSidebarCollapsedControl"] > button {
+  background: var(--bg1) !important;
+  border: 1px solid var(--amber) !important;
+  border-radius: var(--r-sm) !important;
+  width: 38px !important; height: 38px !important;
+  display: flex !important; align-items: center !important; justify-content: center !important;
+  cursor: pointer !important; transition: all .12s !important;
+  box-shadow: 0 0 0 1px var(--amber), 0 2px 10px var(--amber-glow) !important;
+  padding: 0 !important;
+  position: relative !important;
+  font-size: 0 !important;
+  color: transparent !important;
+  overflow: hidden !important;
+}
+/* Nuke every native icon/text node inside (svg, span, "keyboard_double_arrow_right" text, etc.) */
+[data-testid="collapsedControl"] button *,
+[data-testid="stSidebarCollapsedControl"] button *,
+[data-testid="stSidebarCollapsedControl"] > button * {
+  display: none !important;
+  visibility: hidden !important;
+  font-size: 0 !important;
+  width: 0 !important; height: 0 !important;
+  opacity: 0 !important;
+}
+[data-testid="collapsedControl"] button::after,
+[data-testid="stSidebarCollapsedControl"] button::after,
+[data-testid="stSidebarCollapsedControl"] > button::after {
+  content: '\2630' !important;             /* ☰ — Unicode trigram */
+  font-family: 'Inter', 'Helvetica', sans-serif !important;
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  color: var(--amber) !important;
+  line-height: 1 !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: absolute !important;
+  top: 50% !important; left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  width: auto !important; height: auto !important;
+}
+[data-testid="collapsedControl"] button:hover,
+[data-testid="stSidebarCollapsedControl"] button:hover {
+  background: var(--amber-bg) !important;
+  box-shadow: 0 0 0 1px var(--amber), 0 4px 14px var(--amber-glow) !important;
+}
+[data-testid="collapsedControl"] button:hover::after,
+[data-testid="stSidebarCollapsedControl"] button:hover::after {
+  color: var(--amber2) !important;
+}
+
+/* ── SIDEBAR COLLAPSE BUTTON (shows when sidebar is OPEN — kills "keyboard_double_arrow_left" text) ── */
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stSidebar"] button[kind="header"],
+[data-testid="stSidebarHeader"] button {
+  font-size: 0 !important;
+  color: transparent !important;
+  position: relative !important;
+  background: transparent !important;
+  border: none !important;
+  width: 32px !important; height: 32px !important;
+  display: flex !important; align-items: center !important; justify-content: center !important;
+}
+[data-testid="stSidebarCollapseButton"] button > *,
+[data-testid="stSidebarCollapseButton"] button svg,
+[data-testid="stSidebarCollapseButton"] button span,
+[data-testid="stSidebarCollapsedControl"] button > *,
+[data-testid="stSidebarCollapsedControl"] button svg,
+[data-testid="stSidebarCollapsedControl"] button span,
+[data-testid="stSidebar"] button[kind="header"] > *,
+[data-testid="stSidebar"] button[kind="header"] svg,
+[data-testid="stSidebar"] button[kind="header"] span,
+[data-testid="stSidebarHeader"] button > *,
+[data-testid="stSidebarHeader"] button svg,
+[data-testid="stSidebarHeader"] button span {
+  display: none !important;
+  visibility: hidden !important;
+  font-size: 0 !important;
+  width: 0 !important; height: 0 !important;
+}
+[data-testid="stSidebarCollapseButton"] button::after,
+[data-testid="stSidebarCollapsedControl"] button::after,
+[data-testid="stSidebar"] button[kind="header"]::after,
+[data-testid="stSidebarHeader"] button::after {
+  content: '✕' !important;
+  font-family: 'Inter', sans-serif !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  color: var(--amber) !important;
+  line-height: 1 !important;
+  display: block !important;
+  position: absolute !important;
+  top: 50% !important; left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+}
+[data-testid="stSidebarCollapseButton"] button:hover::after,
+[data-testid="stSidebarCollapsedControl"] button:hover::after,
+[data-testid="stSidebar"] button[kind="header"]:hover::after,
+[data-testid="stSidebarHeader"] button:hover::after {
+  color: var(--amber2) !important;
+}
+
+/* ── STICKY HEADER (fixed → persists across every tab while scrolling) ── */
 .sticky-header-wrap {
-  position:sticky; top:0; z-index:9999;
-  background:var(--bg0);
-  padding:.75rem 1.5rem .45rem;
-  margin-bottom:0;
-  border-bottom:1px solid var(--border);
-  box-shadow:0 2px 24px rgba(0,0,0,.07);
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 999990 !important;
+  background-color: var(--background-color) !important;
+  width: 100%;
+  padding: .55rem 1.5rem .55rem 4rem;
+  padding-bottom: 10px;
+  margin-bottom: 0;
+  border-bottom: 1px solid rgba(128,128,128,0.2);
+  box-shadow: 0 2px 24px rgba(0,0,0,.07);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+/* When sidebar is OPEN, shrink the fixed header so it doesn't overlap the sidebar */
+[data-testid="stSidebar"][aria-expanded="true"] ~ section .sticky-header-wrap,
+[data-testid="stAppViewContainer"]:has([data-testid="stSidebar"][aria-expanded="true"]) .sticky-header-wrap {
+  left: var(--sidebar-width, 244px) !important;
 }
 .sticky-header-wrap::before {
   content:''; position:absolute; top:0; left:0; right:0; height:2px;
   background:linear-gradient(90deg,var(--amber3) 0%,var(--amber) 40%,var(--amber2) 70%,transparent 100%);
 }
 
-/* ── TABS ── */
+/* ── TABS (stick just under the fixed header) ── */
 [data-testid="stTabs"] > div:first-of-type {
-  position:sticky; top:52px; z-index:9998;
-  background:var(--bg0);
-  padding:.35rem .3rem;
-  border-bottom:1px solid var(--border);
+  position: sticky !important; top: 78px !important; z-index: 999985 !important;
+  background: var(--bg0) !important;
+  padding: .35rem .3rem;
+  border-bottom: 1px solid var(--border);
 }
 [data-testid="stTabs"] [data-baseweb="tab-list"] { background:transparent; border-bottom:none; gap:.1rem; padding:0; }
 [data-testid="stTabs"] [data-baseweb="tab"] {
@@ -158,7 +292,7 @@ header[data-testid="stHeader"] { height:0!important; min-height:0!important; pad
 [data-testid="stMetric"] {
   background:var(--bg2); border:1px solid var(--border);
   border-radius:var(--r-md); padding:.9rem 1rem!important;
-  transition:all .22s; cursor:default;
+  transition:all .12s; cursor:default;
   position:relative; overflow:hidden;
 }
 [data-testid="stMetric"]::before {
@@ -249,13 +383,34 @@ hr { border:none!important; height:1px!important; background:linear-gradient(90d
 .status-dot-y::before { content:"●"; color:var(--yellow); margin-right:.4rem; }
 .status-dot-r::before { content:"●"; color:var(--red);    margin-right:.4rem; }
 
+/* ── POPOVER PERFORMANCE: kill open/close animations everywhere ── */
+[data-baseweb="popover"],
+[data-baseweb="popover"] *,
+[data-testid="stPopover"],
+[data-testid="stPopover"] *,
+[data-testid="stPopoverBody"],
+[data-baseweb="layer"] > div {
+  transition: none !important;
+  animation: none !important;
+  animation-duration: 0s !important;
+  transition-duration: 0s !important;
+}
+
+/* ── TOOLTIPS: keep them strictly below the fixed header so they never overlap it ── */
+[data-baseweb="tooltip"],
+[role="tooltip"],
+[data-testid="stTooltipContent"],
+[data-testid="stTooltipHoverTarget"] + div {
+  z-index: 999985 !important;
+}
+
 /* ── KPI POPOVER BUTTONS ── */
 [data-testid="stPopover"] button {
   background:var(--bg2)!important; border:1px solid var(--border)!important;
   border-radius:var(--r-md)!important; padding:.9rem 1rem!important;
   height:auto!important; min-height:80px!important;
   text-align:left!important; white-space:pre-wrap!important;
-  transition:all .22s!important; color:var(--t0)!important;
+  transition:all .12s!important; color:var(--t0)!important;
   position:relative!important; overflow:hidden!important;
 }
 [data-testid="stPopover"] button::before {
@@ -271,9 +426,12 @@ hr { border:none!important; height:1px!important; background:linear-gradient(90d
 
 /* ── MOBILE ── */
 @media (max-width:768px) {
-  .sticky-header-wrap { position:relative!important; padding:.5rem .6rem .3rem!important; }
-  [data-testid="stTabs"] > div:first-of-type { position:relative!important; top:0!important; }
-  .main .block-container { padding:.4rem .5rem 2rem!important; }
+  .sticky-header-wrap { padding: .5rem .6rem .3rem .6rem !important; }
+  [data-testid="collapsedControl"] { top: .5rem !important; left: .5rem !important; }
+  [data-testid="stAppViewBlockContainer"],
+  [data-testid="stMainBlockContainer"],
+  section.main > div.block-container { padding-top: 70px !important; padding-left: .5rem !important; padding-right: .5rem !important; }
+  [data-testid="stTabs"] > div:first-of-type { top: 64px !important; }
   [data-testid="stMetricValue"] { font-size:1.3rem!important; }
   [data-testid="stMetricLabel"] { font-size:.55rem!important; }
   .syscode-hdr { flex-wrap:wrap!important; overflow-x:visible!important; gap:.4rem!important; }
@@ -603,8 +761,7 @@ def dbl_click_metric(
     btn_label = f"**{label}**\n\n{value}"
     if delta:
         btn_label += f"\n\n{delta}"
-    with st.popover(btn_label, use_container_width=True,
-                    help=help_text if help_text else None):
+    with st.popover(btn_label, use_container_width=True):
         st.subheader(drilldown_title)
         if help_text:
             st.caption(help_text)
@@ -1189,6 +1346,82 @@ st.markdown(f"""
 </div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CUSTOM HAMBURGER (JS-injected — overrides Streamlit's invisible/missing toggle)
+# ─────────────────────────────────────────────────────────────────────────────
+import streamlit.components.v1 as _components
+_components.html("""
+<script>
+(function(){
+  const PARENT = window.parent.document;
+  const BTN_ID = 'ge-custom-hamburger';
+
+  function findToggle() {
+    return PARENT.querySelector('[data-testid="stSidebarCollapsedControl"] button')
+        || PARENT.querySelector('[data-testid="collapsedControl"] button')
+        || PARENT.querySelector('[data-testid="stSidebarCollapseButton"] button')
+        || PARENT.querySelector('[data-testid="stSidebarCollapseButton"]')
+        || PARENT.querySelector('[data-testid="stSidebar"] button[kind="header"]')
+        || PARENT.querySelector('[data-testid="stSidebar"] [data-testid="stSidebarHeader"] button');
+  }
+
+  function makeBtn() {
+    if (PARENT.getElementById(BTN_ID)) return;
+    const btn = PARENT.createElement('button');
+    btn.id = BTN_ID;
+    btn.type = 'button';
+    btn.setAttribute('aria-label', 'Toggle sidebar');
+    btn.title = 'Toggle sidebar';
+    btn.textContent = '\\u2630';
+    btn.style.cssText = [
+      'position:fixed','top:14px','left:16px','z-index:1000001',
+      'width:40px','height:40px',
+      'background:rgba(245,158,11,0.12)',
+      'border:1.5px solid #F59E0B',
+      'border-radius:6px',
+      'color:#F59E0B',
+      'font-size:22px','font-weight:700','line-height:1',
+      'font-family:Inter,Helvetica,sans-serif',
+      'cursor:pointer',
+      'display:flex','align-items:center','justify-content:center',
+      'box-shadow:0 0 0 1px #F59E0B,0 2px 12px rgba(245,158,11,0.45)',
+      'padding:0','margin:0',
+      'transition:all .15s ease'
+    ].join(';') + ';';
+    btn.addEventListener('mouseenter', function(){
+      btn.style.background = 'rgba(245,158,11,0.22)';
+      btn.style.transform  = 'translateY(-1px)';
+    });
+    btn.addEventListener('mouseleave', function(){
+      btn.style.background = 'rgba(245,158,11,0.12)';
+      btn.style.transform  = 'translateY(0)';
+    });
+    btn.addEventListener('click', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      const t = findToggle();
+      if (t) { t.click(); }
+    });
+    PARENT.body.appendChild(btn);
+  }
+
+  // Try immediately + retry until the DOM is ready
+  makeBtn();
+  let tries = 0;
+  const iv = setInterval(function(){
+    makeBtn();
+    if (++tries > 40) clearInterval(iv);
+  }, 250);
+
+  // Keep button alive across Streamlit re-renders
+  const obs = new MutationObserver(function(){
+    if (!PARENT.getElementById(BTN_ID)) makeBtn();
+  });
+  obs.observe(PARENT.body, { childList: true, subtree: false });
+})();
+</script>
+""", height=0, width=0)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
 tab0, tab1, tab2, tab3, tab4, tab_consume, tab5, tab_master = st.tabs([
@@ -1290,6 +1523,43 @@ with tab0:
     can_sqm        = round(proj_sqm * min(1.0, f_cov/100), 2)
     short_sqm      = round(proj_sqm - can_sqm, 2)
 
+    # ── SQM-based drill-down (per Equipment × System Code) ───────────────────
+    _pair_d = filtered_dm.merge(
+        inv[["Material_Code", "Available_Qty"]], on="Material_Code", how="left"
+    )
+    _pair_d["Available_Qty"] = _pair_d["Available_Qty"].fillna(0)
+    _pair_d["Avail_Cap"]     = _pair_d[["Demand_Qty", "Available_Qty"]].min(axis=1)
+    _pair_agg = _pair_d.groupby(
+        ["Equipment_Tag_No.", "Lining_System_Code"], as_index=False
+    ).agg(_Demand=("Demand_Qty", "sum"), _Avail=("Avail_Cap", "sum"))
+    _pair_agg["Coverage %"] = (
+        _pair_agg["_Avail"] / _pair_agg["_Demand"].replace(0, np.nan) * 100
+    ).fillna(100).clip(0, 100).round(1)
+
+    _dd_sqm_pair = sqm_ref[
+        sqm_ref["Equipment_Tag_No."].isin(filtered_tags) &
+        sqm_ref["Lining_System_Code"].isin(sel_codes)
+    ][["Equipment_Tag_No.", "Lining_System_Code", "Total_SQM"]].merge(
+        _pair_agg[["Equipment_Tag_No.", "Lining_System_Code", "Coverage %"]],
+        on=["Equipment_Tag_No.", "Lining_System_Code"], how="left"
+    )
+    _dd_sqm_pair["Coverage %"]    = _dd_sqm_pair["Coverage %"].fillna(100)
+    _dd_sqm_pair["Coverable SQM"] = (_dd_sqm_pair["Total_SQM"] * _dd_sqm_pair["Coverage %"] / 100).round(2)
+    _dd_sqm_pair["SQM Deficit"]   = (_dd_sqm_pair["Total_SQM"] - _dd_sqm_pair["Coverable SQM"]).round(2)
+    _dd_sqm_pair = _dd_sqm_pair.rename(columns={
+        "Equipment_Tag_No.":  "Equipment Tag",
+        "Lining_System_Code": "System Code",
+        "Total_SQM":          "Total SQM",
+    })
+
+    _dd_cov_sqm_df = (_dd_sqm_pair[
+        ["Equipment Tag", "System Code", "Total SQM", "Coverage %", "Coverable SQM"]
+    ].sort_values("Coverage %").reset_index(drop=True))
+
+    _dd_def_sqm_df = (_dd_sqm_pair[_dd_sqm_pair["SQM Deficit"] > 0][
+        ["Equipment Tag", "System Code", "Total SQM", "Coverable SQM", "SQM Deficit"]
+    ].sort_values("SQM Deficit", ascending=False).reset_index(drop=True))
+
     # ─────────────────────────────────────────────────────────────────────────
     if dash_view == "📈 Project Overview":
     # ─────────────────────────────────────────────────────────────────────────
@@ -1313,22 +1583,22 @@ with tab0:
                 "SQM by Equipment & System Code", _dd_sqm_df,
                 help_text="Remaining surface area (m²) after deducting daily consumption entries.")
         with k3:
-            dbl_click_metric("Available Coverage SQM", f"{can_sqm:,.1f}  ({f_cov:.0f}%)", "t0_cov_sqm",
-                "Material Coverage Breakdown", _dd_cov_df,
-                help_text="SQM coverable with currently available material = Total SQM × Coverage %.")
+            dbl_click_metric("Available Coverage SQM", f"{can_sqm:,.2f}", "t0_cov_sqm",
+                "Coverable SQM by Equipment & System Code", _dd_cov_sqm_df,
+                help_text="Area (m²) coverable with currently available stock = Total SQM × Coverage %. Drill-down shows per-equipment SQM coverage.")
         with k4:
-            dbl_click_metric("SQM Deficit", f"{short_sqm:,.1f}", "t0_deficit",
-                "Materials with Shortfall", _dd_def_df,
-                help_text="SQM we cannot complete due to material shortfalls = Total − Achievable.")
+            dbl_click_metric("SQM Deficit", f"{short_sqm:,.2f}", "t0_deficit",
+                "SQM Deficit by Equipment & System Code", _dd_def_sqm_df,
+                help_text="Area (m²) that cannot be completed = Total SQM − Coverable SQM. Drill-down shows per-equipment SQM deficit.")
         with k5:
             dbl_click_metric("Overall Coverage", f"{f_cov:.1f}%", "t0_ov_cov",
-                "Coverage by Material", _dd_cov_df,
+                "Coverable SQM by Equipment & System Code", _dd_cov_sqm_df,
                 delta=f"{f_cov-100:.1f}%",
-                help_text="Allocated Qty ÷ Demand Qty × 100 across all filtered materials.")
+                help_text="Allocated Qty ÷ Demand Qty × 100 across all filtered materials. Drill-down shows per-equipment SQM coverage.")
         with k6:
-            dbl_click_metric("Shortfall SQM", f"{short_sqm:,.1f}", "t0_short_sqm",
-                "Materials with Shortfall", _dd_def_df,
-                help_text="SQM that cannot be completed due to material shortfalls = Total SQM − Available Material Coverage SQM.")
+            dbl_click_metric("Shortfall SQM", f"{short_sqm:,.2f}", "t0_short_sqm",
+                "SQM Deficit by Equipment & System Code", _dd_def_sqm_df,
+                help_text="Area (m²) shortfall = Total SQM − Available Coverage SQM. Drill-down shows per-equipment SQM deficit.")
         with k7:
             dbl_click_metric("Critical (<50%)", str(int((f_demand["Coverage_Pct"]<50).sum())), "t0_critical",
                 "Critical Materials (Coverage < 50%)", _dd_crit_df,
@@ -1619,11 +1889,11 @@ with tab0:
             dbl_click_metric("Total SQM", f"{proj_sqm:,.1f}", "t0p_sqm",
                 "SQM by Equipment & System Code", _dd_sqm_df)
         with p3:
-            dbl_click_metric("Available Coverage SQM", f"{can_sqm:,.1f}  ({f_cov:.0f}%)", "t0p_cov_sqm",
-                "Material Coverage Breakdown", _dd_cov_df)
+            dbl_click_metric("Available Coverage SQM", f"{can_sqm:,.2f}", "t0p_cov_sqm",
+                "Coverable SQM by Equipment & System Code", _dd_cov_sqm_df)
         with p4:
-            dbl_click_metric("SQM Deficit", f"{short_sqm:,.1f}", "t0p_deficit",
-                "Materials with Shortfall", _dd_def_df)
+            dbl_click_metric("SQM Deficit", f"{short_sqm:,.2f}", "t0p_deficit",
+                "SQM Deficit by Equipment & System Code", _dd_def_sqm_df)
         with p5:
             dbl_click_metric("Shortfall Units", f"{f_total_short:,.0f}", "t0p_short",
                 "Materials with Shortfall", _dd_def_df)
@@ -2463,8 +2733,8 @@ with tab3:
         ae_k1, ae_k2, ae_k3, ae_k4, ae_k5 = st.columns(5)
         ae_k1.metric("Equipment", str(len(all_eq_tags)))
         ae_k2.metric("Total SQM", f"{ae_sqm:,.1f}")
-        ae_k3.metric("Available Coverage SQM", f"{ae_can_sqm:,.1f}")
-        ae_k4.metric("SQM Deficit", f"{ae_sqm - ae_can_sqm:,.1f}")
+        ae_k3.metric("Available Coverage SQM", f"{ae_can_sqm:,.2f}")
+        ae_k4.metric("SQM Deficit", f"{ae_sqm - ae_can_sqm:,.2f}")
         ae_k5.metric("Overall Coverage", f"{ae_pct:.1f}%")
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -2875,9 +3145,117 @@ with tab4:
     st.markdown('<div class="sec-hdr">⚙️ Execution Plan — Critical System Code Analysis</div>',
                 unsafe_allow_html=True)
 
+    exec_subview = st.radio(
+        "View", ["⚙️ Execution Plan", "📋 Progress List"],
+        horizontal=True, key="exec_subview", label_visibility="collapsed"
+    )
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    if exec_subview == "📋 Progress List":
+        if not db_available():
+            st.warning("Database required for the Progress List.")
+        else:
+            conn = get_db()
+            prog_df = pd.read_sql("""
+                WITH dynamic_done AS (
+                    SELECT
+                        equipment_tag,
+                        lining_system_code,
+                        COALESCE(SUM(sqm_completed), 0.0) AS done_sqm
+                    FROM consumption_log
+                    GROUP BY equipment_tag, lining_system_code
+                )
+                SELECT
+                    sp.equipment_tag                                        AS "Equipment Tag",
+                    sp.lining_system_code                                   AS "System Code",
+                    e.lining_system_short_name                              AS "System Name",
+                    e.location                                              AS "Location",
+                    e.name                                                  AS "Equipment Name",
+                    sp.original_sqm                                         AS "Total SQM",
+                    COALESCE(dd.done_sqm, 0.0)                             AS "Done SQM",
+                    (sp.original_sqm - COALESCE(dd.done_sqm, 0.0))        AS "Remaining SQM",
+                    ROUND(COALESCE(dd.done_sqm, 0.0) * 100.0
+                          / NULLIF(sp.original_sqm, 0), 1)                 AS "Completion %"
+                FROM sqm_progress sp
+                LEFT JOIN dynamic_done dd
+                       ON sp.equipment_tag      = dd.equipment_tag
+                      AND sp.lining_system_code = dd.lining_system_code
+                LEFT JOIN equipment e
+                       ON sp.equipment_tag      = e.equipment_tag
+                      AND sp.lining_system_code = e.lining_system_code
+                ORDER BY e.location, sp.equipment_tag,
+                         CAST(sp.lining_system_code AS INTEGER)
+            """, conn)
+            conn.close()
+
+            prog_df["Status"] = prog_df["Completion %"].apply(
+                lambda p: "✅ Complete"    if (p or 0) >= 100
+                          else "🔄 In Progress" if (p or 0) > 0
+                          else "⏳ Not Started"
+            )
+
+            tot_orig = prog_df["Total SQM"].sum()
+            tot_done = prog_df["Done SQM"].sum()
+            tot_rem  = prog_df["Remaining SQM"].sum()
+            tot_pct  = (tot_done / tot_orig * 100) if tot_orig > 0 else 0.0
+
+            pk1, pk2, pk3, pk4 = st.columns(4)
+            pk1.metric("Total SQM",     f"{tot_orig:,.2f}")
+            pk2.metric("Done SQM",      f"{tot_done:,.2f}")
+            pk3.metric("Remaining SQM", f"{tot_rem:,.2f}")
+            pk4.metric("Completion",    f"{tot_pct:.1f}%")
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            pf1, pf2 = st.columns(2)
+            with pf1:
+                prog_locs   = ["All"] + sorted(prog_df["Location"].dropna().unique().tolist())
+                prog_loc_f  = st.selectbox("Filter Location", prog_locs, key="prog_loc_f")
+            with pf2:
+                prog_stat_opts = ["All", "✅ Complete", "🔄 In Progress", "⏳ Not Started"]
+                prog_status_f  = st.selectbox("Filter Status", prog_stat_opts, key="prog_status_f")
+
+            filt_prog = prog_df.copy()
+            if prog_loc_f    != "All": filt_prog = filt_prog[filt_prog["Location"] == prog_loc_f]
+            if prog_status_f != "All": filt_prog = filt_prog[filt_prog["Status"]   == prog_status_f]
+            filt_prog = filt_prog.reset_index(drop=True)
+
+            def _style_prog(row):
+                p = row["Completion %"] or 0
+                if p >= 100:  bg, tc = "rgba(16,185,129,.1)", "#10B981"
+                elif p > 0:   bg, tc = "rgba(245,158,11,.1)",  "#F59E0B"
+                else:         bg, tc = "rgba(239,68,68,.1)",   "#EF4444"
+                styles = [f"background-color:{bg}"] * len(row)
+                ci = list(row.index).index("Completion %")
+                styles[ci] = f"background-color:{bg};color:{tc};font-weight:700"
+                return styles
+
+            st.dataframe(
+                filt_prog.style.apply(_style_prog, axis=1).format({
+                    "Total SQM":     "{:,.2f}",
+                    "Done SQM":      "{:,.2f}",
+                    "Remaining SQM": "{:,.2f}",
+                    "Completion %":  "{:.1f}%",
+                }),
+                use_container_width=True, hide_index=True,
+                height=min(700, 60 + len(filt_prog) * 35),
+                key="prog_list_tbl"
+            )
+
+            st.download_button(
+                "⬇ Download Progress List",
+                data=generate_excel_report(
+                    filt_prog.drop(columns=["Status"], errors="ignore").reset_index(drop=True),
+                    f"Progress List — {date.today()}", color_scheme="overview"),
+                file_name=f"progress_list_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_prog_list"
+            )
+
     session_tags = st.session_state.session_tags
 
-    if not session_tags:
+    if exec_subview == "📋 Progress List":
+        pass  # progress list already rendered above
+    elif not session_tags:
         st.info("Add equipment tags in the Entry tab first.")
     else:
         alloc_df   = cascade_allocate(session_tags)
@@ -3608,12 +3986,36 @@ with tab_consume:
         st.caption("Log when new materials arrive on site. "
                    "Available Qty increases by the received amount; Ordered Qty decreases accordingly.")
 
-        # ── Material selector (outside form so auto-fill updates reactively) ─
-        mat_opts_r = inv["Material_Code"].tolist()
+        # ── Step 1: Order ID selector (appears first; material list derived from it) ─
+        _rc_open_conn = get_db()
+        _rc_all_orders = pd.read_sql(
+            "SELECT DISTINCT order_id FROM orders_log "
+            "WHERE status != 'Fulfilled' AND (ordered_qty - fulfilled_qty) > 0 "
+            "ORDER BY id DESC",
+            _rc_open_conn)
+        _rc_open_conn.close()
+        _rc_order_opts = ["— None —"] + _rc_all_orders["order_id"].tolist()
+        _rc_sel_order  = st.selectbox(
+            "🔗 Link to Order ID / PR# (Optional — select first to filter materials)",
+            options=_rc_order_opts, key="rc_order_id",
+            help="Select an order to restrict the Material dropdown to only that order's items. "
+                 "Choose '— None —' to see all available materials.")
+
+        # ── Step 2: Material selector — filtered by selected order (or all) ──────
+        if _rc_sel_order != "— None —":
+            _rc_ord_conn = get_db()
+            _rc_ord_mats = pd.read_sql(
+                "SELECT DISTINCT material_code FROM orders_log WHERE order_id = ?",
+                _rc_ord_conn, params=[_rc_sel_order])["material_code"].tolist()
+            _rc_ord_conn.close()
+            mat_opts_r = [m for m in inv["Material_Code"].tolist() if m in _rc_ord_mats]
+        else:
+            mat_opts_r = inv["Material_Code"].tolist()
+
         rc_mat = st.selectbox(
             "🧪 Select Material",
             options=mat_opts_r,
-            format_func=lambda m: f"{m}  –  "
+            format_func=lambda m: f"{m}  —  "
                 f"{inv.set_index('Material_Code')['Material_Name'].get(m, m)[:35]}",
             key="rc_mat_sel")
 
@@ -3629,25 +4031,6 @@ with tab_consume:
                             disabled=True, key="rc_ord_disp")
 
         st.markdown("<br>", unsafe_allow_html=True)
-
-        # ── Order ID selector — filtered to open orders for the selected material ─
-        _rc_open_conn = get_db()
-        if rc_mat:
-            _rc_open_orders = pd.read_sql(
-                "SELECT DISTINCT order_id FROM orders_log "
-                "WHERE material_code = ? "
-                "  AND status != 'Fulfilled' "
-                "  AND (ordered_qty - fulfilled_qty) > 0 "
-                "ORDER BY id DESC",
-                _rc_open_conn, params=[rc_mat])
-        else:
-            _rc_open_orders = pd.DataFrame(columns=["order_id"])
-        _rc_open_conn.close()
-        _rc_order_opts = ["— None —"] + _rc_open_orders["order_id"].tolist()
-        _rc_sel_order  = st.selectbox(
-            "🔗 Link to Order ID (Optional)",
-            options=_rc_order_opts, key="rc_order_id",
-            help="Shows only open orders with pending qty for the selected material.")
 
         # ── Receipt form ──────────────────────────────────────────────────────
         with st.form(key="receipt_form", clear_on_submit=False):
