@@ -16,7 +16,7 @@ from allocation_engine import build_demand_matrix
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Smart Material Estimator & Planner",
-                   page_icon="🏗️", layout="wide",
+                   page_icon="", layout="wide",
                    initial_sidebar_state="expanded")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
