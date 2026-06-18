@@ -1800,12 +1800,14 @@ def tab_entry():
 def tab_reports():
     mode = submode_radio(
         "Report mode",
-        ["📦 Session Report", "📍 Location Report", "📈 Total Overview", "📅 Equipment Progress Report"],
+        ["📦 Session Report", "📍 Location Report", "🏗 Equipment Report",
+         "📈 Total Overview", "📅 Equipment Progress Report"],
         key="reports_mode",
     )
 
     if   mode.startswith("📦"): _reports_session()
     elif mode.startswith("📍"): _reports_location()
+    elif mode.startswith("🏗"): _reports_equipment()
     elif mode.startswith("📈"): _reports_overview()
     else:                       _reports_progress()
 
@@ -2328,6 +2330,165 @@ def _reports_overview():
         file_name=f"total_overview_{date.today():%Y%m%d}.xlsx",
         key="ov_dl",
     )
+
+
+def _build_equipment_export(tags: list[str]) -> pd.DataFrame:
+    """Flat table for the equipment report export.
+       Columns: Location, Type, Equipment No., System Code, Total SQM.
+       One row per (equipment, system code) pair."""
+    if not tags:
+        return pd.DataFrame(columns=["Location","Type","Equipment No.","System Code","Total SQM"])
+    rows = []
+    for tag in tags:
+        em_row = eq_master[eq_master["Equipment_Tag_No."] == tag]
+        if em_row.empty: continue
+        em_row = em_row.iloc[0]
+        sc_rows = equip_sc[equip_sc["Equipment_Tag_No."] == tag].sort_values(
+            "Lining_System_Code", key=lambda s: s.astype(int))
+        for _, sc in sc_rows.iterrows():
+            rows.append({
+                "Location":      em_row["Location"],
+                "Type":          em_row.get("Type", "") or "",
+                "Equipment No.": tag,
+                "System Code":   sc["Lining_System_Short_Name"],
+                "Total SQM":     round(sc["Total_SQM_Original"], 2),
+            })
+    return pd.DataFrame(rows, columns=["Location","Type","Equipment No.","System Code","Total SQM"])
+
+
+def _reports_equipment():
+    """Equipment-focused list. Shows equipment details + which system codes
+       (no materials, no qty). Downloads: per-location + combined."""
+    sec_header("🏗 Equipment Report — Details by Equipment")
+    st.caption("Equipment-wise list with system code breakdown only — no material consumption / quantities.")
+
+    # ── Cascading filters (Location → Type) ─────────
+    fc1, fc2 = st.columns(2)
+    em = eq_master.copy()
+    with fc1:
+        loc_opts = [l for l in LOCATION_ORDER if l in em["Location"].unique()]
+        f_loc = popover_multiselect("Location", loc_opts, loc_opts, key="eq_rep_loc")
+    em = em[em["Location"].isin(f_loc)] if f_loc else em.iloc[0:0]
+    with fc2:
+        type_opts = sorted(em["Type"].dropna().unique())
+        f_type = popover_multiselect("Type", type_opts, type_opts, key="eq_rep_type")
+    em = em[em["Type"].isin(f_type)] if f_type else em.iloc[0:0]
+
+    tags = em["Equipment_Tag_No."].tolist()
+    if not tags:
+        st.info("No equipment matches the current filters.")
+        return
+
+    # ── KPI strip ─────────
+    n_codes_total = equip_sc[equip_sc["Equipment_Tag_No."].isin(tags)].shape[0]
+    total_sqm = equip_sc[equip_sc["Equipment_Tag_No."].isin(tags)]["Total_SQM_Original"].sum()
+    kpi_strip([
+        ("Equipment",      f"{len(tags)} tags",       "filtered"),
+        ("System Codes",   f"{n_codes_total}",        "rows total"),
+        ("Locations",      f"{em['Location'].nunique()}", "covered"),
+        ("Total SQM",      f"{total_sqm:,.2f}",       "original surface area"),
+    ], cols=4)
+
+    # ── Expandable list per equipment ─────────
+    sec_header("📋 Equipment List")
+    for tag in tags:
+        row = em[em["Equipment_Tag_No."] == tag].iloc[0]
+        sc_rows = equip_sc[equip_sc["Equipment_Tag_No."] == tag].sort_values(
+            "Lining_System_Code", key=lambda s: s.astype(int))
+        n_codes = len(sc_rows)
+        tag_total_sqm = sc_rows["Total_SQM_Original"].sum()
+        # Code chip strip for the header
+        code_chips_inline = " ".join(
+            f'<span class="code-badge" style="margin-right:3px;">C{sc["Lining_System_Code"]}</span>'
+            for _, sc in sc_rows.iterrows()
+        )
+
+        with st.expander(
+            f"{tag}  ·  {row['Name']}  ·  {row.get('Type','—') or '—'}  ·  "
+            f"{row['Location']}  ·  {n_codes} code(s)  ·  {tag_total_sqm:,.2f} SQM",
+            expanded=False,
+        ):
+            # Metadata grid
+            m1, m2, m3 = st.columns(3)
+            m1.markdown(f'**Type:** {row.get("Type","—") or "—"}')
+            m2.markdown(f'**Substrate:** {row.get("Substrate","—") or "—"}')
+            m3.markdown(f'**Material Spec.:** {row.get("Material_Spec","—") or "—"}')
+            m4, m5, m6 = st.columns(3)
+            m4.markdown(f'**Location:** {row["Location"]}')
+            m5.markdown(f'**Design:** {row.get("Design","—") or "—"}')
+            m6.markdown(f'**Total SQM:** `{tag_total_sqm:,.2f}`')
+            lining = str(row.get("Lining_Systems") or "").replace("\n", " | ").strip()
+            if lining:
+                st.caption(f"**Lining Systems:** {lining}")
+
+            # System codes table — Total SQM only (no materials / qty)
+            sec_header(f"⚗️ System Codes ({n_codes})")
+            sc_table_html = """
+            <div class="mat-tbl-wrap"><table class="mat-tbl">
+              <thead><tr>
+                <th>Code</th><th>System Code (Short Name)</th>
+                <th class="num">Total SQM</th>
+              </tr></thead><tbody>
+            """
+            for _, sc in sc_rows.iterrows():
+                sc_table_html += (
+                    f'<tr><td class="code">Code {sc["Lining_System_Code"]}</td>'
+                    f'<td>{sc["Lining_System_Short_Name"]}</td>'
+                    f'<td class="num">{sc["Total_SQM_Original"]:,.2f}</td></tr>'
+                )
+            sc_table_html += "</tbody></table></div>"
+            st.markdown(sc_table_html, unsafe_allow_html=True)
+
+    # ── Downloads (per location + combined) ─────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
+    sec_header("📥 Download Equipment Report")
+
+    dl_cols = st.columns(len(LOCATION_ORDER))
+    all_loc_sheets = []
+    for ic, loc in enumerate(LOCATION_ORDER):
+        loc_tags = em[em["Location"] == loc]["Equipment_Tag_No."].tolist()
+        if not loc_tags:
+            dl_cols[ic].caption(f"— No equipment in {loc} —")
+            continue
+        loc_df = _build_equipment_export(loc_tags)
+        scheme = {"Brown Field":"brown_field","TRAIN J":"train_j","TRAIN K":"train_k"}[loc]
+        with dl_cols[ic]:
+            st.download_button(
+                f"⬇ {loc}",
+                excel_bytes(loc_df, f"Equipment Report — {loc}", scheme,
+                            add_grand_total=False),
+                file_name=f"equipment_report_{loc.replace(' ','_')}_{date.today():%Y%m%d}.xlsx",
+                key=f"eq_rep_dl_{loc}", use_container_width=True,
+            )
+        all_loc_sheets.append({
+            "name":            loc[:31],
+            "df":              loc_df,
+            "title":           f"Equipment Report — {loc}",
+            "color_scheme":    scheme,
+            "add_grand_total": False,
+        })
+
+    # Whole-equipment combined buttons
+    combined_df = _build_equipment_export(tags)
+    cdl1, cdl2 = st.columns(2)
+    with cdl1:
+        st.download_button(
+            "⬇ All Equipment — Single Sheet",
+            excel_bytes(combined_df, "Equipment Report — All", "overview",
+                        add_grand_total=False),
+            file_name=f"equipment_report_all_{date.today():%Y%m%d}.xlsx",
+            key="eq_rep_dl_all_single", use_container_width=True,
+        )
+    with cdl2:
+        if all_loc_sheets:
+            st.download_button(
+                "⬇ All Locations — Combined (Multi-Sheet)",
+                excel_bytes_multi(all_loc_sheets),
+                file_name=f"equipment_report_combined_{date.today():%Y%m%d}.xlsx",
+                key="eq_rep_dl_all_multi", use_container_width=True,
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _reports_progress():
