@@ -2473,7 +2473,7 @@ with st.sidebar:
     st.markdown("""
     <div style="padding:.3rem 0 1.2rem">
       <div style="font-family:'JetBrains Mono',monospace;font-size:1rem;
-                  font-weight:700;color:#F59E0B;">🏗 SME</div>
+                  font-weight:700;color:#F59E0B;">SME</div>
       <div style="font-family:'JetBrains Mono',monospace;font-size:.56rem;
                   letter-spacing:.18em;text-transform:uppercase;color:var(--t5);margin-top:2px;">
         Smart Material Estimator v3</div>
