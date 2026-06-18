@@ -693,7 +693,7 @@ def _show_login():
             st.image(LOGO_PATH, width=200)
     st.markdown("""
     <div style="text-align:center;margin:.6rem 0 1.2rem;">
-      <div style="font-size:38px;line-height:1;">🏗</div>
+      <div style="font-size:38px;line-height:1;"></div>
       <div class="sme-login-title">Smart Material Estimator</div>
       <div class="sme-login-sub">Enterprise Platform · v3</div>
     </div>""", unsafe_allow_html=True)
