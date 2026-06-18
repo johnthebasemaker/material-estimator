@@ -1285,6 +1285,7 @@ def _equipment_report_excel(
     The "Total SQM" column is summed; all other columns are treated as labels.
     """
     SUMMARY_COLS = ["System Code", "System Name", "Total SQM"]
+    EQ_SUMMARY_COLS = ["Equipment No.", "System Name", "Total SQM"]
 
     def _write_main_with_summary(writer, wb, spec):
         out_df = spec["df"].copy().reset_index(drop=True)
@@ -1305,6 +1306,26 @@ def _equipment_report_excel(
             ).reset_index(drop=True)
         else:
             summary_df = pd.DataFrame(columns=SUMMARY_COLS)
+
+        # Build the per-sheet Summary by Equipment:
+        #   one row per equipment, System Name column is "+"-joined codes
+        #   (e.g. "CBL63+RLCB4"), Total SQM = sum across that equipment's codes.
+        if ({"Equipment No.", "System Code", "System Name", "Total SQM"}
+                .issubset(out_df.columns) and len(out_df)):
+            _ord = (out_df[["Equipment No.", "System Code", "System Name", "Total SQM"]]
+                    .copy())
+            _ord["_code_sort"] = _ord["System Code"].astype(str).map(
+                lambda v: int(v) if str(v).isdigit() else 9999)
+            _ord = _ord.sort_values(["Equipment No.", "_code_sort"])
+            eq_summary_df = _ord.groupby("Equipment No.", as_index=False, sort=False).agg(
+                **{"System Name": ("System Name",
+                                   lambda s: "+".join(dict.fromkeys(map(str, s)))),
+                   "Total SQM":   ("Total SQM", "sum")},
+            )
+            eq_summary_df["Total SQM"] = eq_summary_df["Total SQM"].round(2)
+            eq_summary_df = eq_summary_df.reset_index(drop=True)
+        else:
+            eq_summary_df = pd.DataFrame(columns=EQ_SUMMARY_COLS)
 
         # Main grand-total row (sums numeric column "Total SQM")
         main_df = out_df.copy()
@@ -1406,6 +1427,43 @@ def _equipment_report_excel(
             ws.write(sum_gt_row, 1, "", total_fmt)
             ws.write(sum_gt_row, 2,
                      round(float(summary_df["Total SQM"].sum()), 2), total_fmt)
+            sys_block_end = sum_gt_row
+        else:
+            # No system-code summary rendered — anchor at the header row so the
+            # equipment block still appears below with proper spacing.
+            sys_block_end = sum_hdr_row
+
+        # ── ONE blank row, then Summary by Equipment ──
+        eq_gap_row   = sys_block_end + 1                       # blank
+        eq_sub_row   = eq_gap_row + 1                          # subtitle
+        eq_hdr_row   = eq_sub_row + 1                          # header
+        eq_data_row  = eq_hdr_row + 1                          # first data row
+
+        eq_sub_span = min(n_cols, len(EQ_SUMMARY_COLS))
+        if eq_sub_span > 1:
+            ws.merge_range(eq_sub_row, 0, eq_sub_row, eq_sub_span - 1,
+                           "Summary by Equipment (Total SQM)", sub_title_fmt)
+        else:
+            ws.write(eq_sub_row, 0, "Summary by Equipment (Total SQM)", sub_title_fmt)
+        ws.set_row(eq_sub_row, 20)
+
+        for col_i, col_name in enumerate(EQ_SUMMARY_COLS):
+            ws.write(eq_hdr_row, col_i, col_name, header_fmt)
+        ws.set_row(eq_hdr_row, 18)
+
+        for row_i, row_vals in enumerate(
+                eq_summary_df[EQ_SUMMARY_COLS].itertuples(index=False, name=None)):
+            for col_i, val in enumerate(row_vals):
+                cell_val = ("" if (val is None or
+                                   (isinstance(val, float) and np.isnan(val))) else val)
+                ws.write(eq_data_row + row_i, col_i, cell_val, data_fmt)
+
+        if len(eq_summary_df):
+            eq_gt_row = eq_data_row + len(eq_summary_df)
+            ws.write(eq_gt_row, 0, "GRAND TOTAL", total_fmt)
+            ws.write(eq_gt_row, 1, "", total_fmt)
+            ws.write(eq_gt_row, 2,
+                     round(float(eq_summary_df["Total SQM"].sum()), 2), total_fmt)
 
         # ── Auto-width: consider main + summary content together ──
         # Main columns
@@ -1414,18 +1472,24 @@ def _equipment_report_excel(
             max_len  = max(len(str(col_name)),
                            col_data.str.len().max() if len(col_data) else 0)
             ws.set_column(col_i, col_i, min(int(max_len) + 3, 42))
-        # Summary columns (only widen if they exceed main's width at that index)
-        for col_i, col_name in enumerate(SUMMARY_COLS):
+        # Summary + Equipment-summary columns — widen if they exceed main's
+        # width at the same column index.
+        def _max_str_len(series):
+            return series.str.len().max() if len(series) else 0
+        for col_i in range(max(len(SUMMARY_COLS), len(EQ_SUMMARY_COLS))):
             if col_i >= n_cols:
                 continue
-            col_data = summary_df.iloc[:, col_i].fillna("").astype(str) if len(summary_df) else pd.Series([], dtype=str)
-            cur_width_chars = max(len(str(col_name)),
-                                  col_data.str.len().max() if len(col_data) else 0)
-            # Compare with main's width at same position; widen if needed.
+            candidates = []
             main_col_data = main_df.iloc[:, col_i].fillna("").astype(str)
-            main_w = max(len(str(main_df.columns[col_i])),
-                         main_col_data.str.len().max() if len(main_col_data) else 0)
-            final_w = min(max(cur_width_chars, main_w) + 3, 42)
+            candidates.append(max(len(str(main_df.columns[col_i])),
+                                  _max_str_len(main_col_data)))
+            if col_i < len(SUMMARY_COLS):
+                sc = summary_df.iloc[:, col_i].fillna("").astype(str) if len(summary_df) else pd.Series([], dtype=str)
+                candidates.append(max(len(str(SUMMARY_COLS[col_i])), _max_str_len(sc)))
+            if col_i < len(EQ_SUMMARY_COLS):
+                ec = eq_summary_df.iloc[:, col_i].fillna("").astype(str) if len(eq_summary_df) else pd.Series([], dtype=str)
+                candidates.append(max(len(str(EQ_SUMMARY_COLS[col_i])), _max_str_len(ec)))
+            final_w = min(int(max(candidates)) + 3, 42)
             ws.set_column(col_i, col_i, final_w)
 
     # ── Helper: write the "All System Codes" sheet (codes-only totals) ──
@@ -1534,6 +1598,474 @@ def _equipment_report_excel(
             _write_all_codes_sheet(writer, wb, pooled)
 
     return buf.getvalue()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCATION REPORT — Excel writer with main alloc table + 3 summary blocks
+#
+# Each sheet contains:
+#   1. Main alloc table (Equipment / System Code / Material / Demand / Available
+#      / Allocated / Shortfall / Coverage % …)
+#   2. blank row
+#   3. Summary by System Code   →  System Code | System Name | Total SQM
+#   4. blank row
+#   5. Summary by Equipment     →  Equipment No. | System Names (concat) | Total SQM
+#   6. blank row
+#   7. Summary by Material      →  Material Code | Material Name | UOM | Total Qty
+#
+# Used by Location Based and All Equipment downloads in the Location Report tab.
+# Existing generate_excel_report / generate_multi_sheet_excel are untouched, so
+# every other report in the app behaves exactly as before.
+# ─────────────────────────────────────────────────────────────────────────────
+def _location_report_excel(*, sheets: list) -> bytes:
+    """Build the Location Report workbook.
+
+    sheets: list of dicts, each with:
+        name (str), df (alloc-style DataFrame), title (str), color_scheme (str)
+
+    The df must contain at minimum these columns (extra columns are kept):
+        Equipment_Tag_No., Lining_System_Code, Lining_System_Short_Name,
+        Total_SQM, Material_Code, Material_Name, UOM, Demand_Qty
+    """
+    SUMMARY_COLS    = ["System Code", "System Name", "Total SQM"]
+    EQ_SUMMARY_COLS = ["Equipment No.", "System Name", "Total SQM"]
+    MAT_SUMMARY_COLS = ["Material Code", "Material Name", "UOM", "Total Qty"]
+
+    def _write_sheet(writer, wb, spec):
+        out_df = spec["df"].copy().reset_index(drop=True)
+        sname  = str(spec["name"])[:31]
+        title  = spec.get("title", sname)
+        cs     = COLOR_SCHEMES.get(spec.get("color_scheme", "dashboard"),
+                                   COLOR_SCHEMES["dashboard"])
+
+        # ── Build summaries from the source df ──
+        # System Code & Equipment summaries use UNIQUE (Tag, Code) Total_SQM
+        # to avoid double-counting across material rows.
+        if {"Equipment_Tag_No.", "Lining_System_Code",
+                "Lining_System_Short_Name", "Total_SQM"}.issubset(out_df.columns) and len(out_df):
+            tag_code = (out_df[["Equipment_Tag_No.", "Lining_System_Code",
+                                "Lining_System_Short_Name", "Total_SQM"]]
+                        .drop_duplicates(subset=["Equipment_Tag_No.",
+                                                  "Lining_System_Code"]))
+            sys_sum = (tag_code.groupby(
+                          ["Lining_System_Code", "Lining_System_Short_Name"],
+                          as_index=False, sort=False)["Total_SQM"].sum())
+            sys_sum["Total_SQM"] = sys_sum["Total_SQM"].round(2)
+            sys_sum = sys_sum.sort_values(
+                "Lining_System_Code",
+                key=lambda s: s.astype(str).map(
+                    lambda v: int(v) if str(v).isdigit() else 9999),
+            ).reset_index(drop=True)
+            sys_sum.columns = SUMMARY_COLS
+
+            tc = tag_code.copy()
+            tc["_code_sort"] = tc["Lining_System_Code"].astype(str).map(
+                lambda v: int(v) if str(v).isdigit() else 9999)
+            tc = tc.sort_values(["Equipment_Tag_No.", "_code_sort"])
+            eq_sum = tc.groupby("Equipment_Tag_No.", as_index=False, sort=False).agg(
+                **{"System Name": ("Lining_System_Short_Name",
+                                   lambda s: "+".join(dict.fromkeys(map(str, s)))),
+                   "Total SQM":   ("Total_SQM", "sum")},
+            )
+            eq_sum["Total SQM"] = eq_sum["Total SQM"].round(2)
+            eq_sum = eq_sum.rename(columns={"Equipment_Tag_No.": "Equipment No."})
+            eq_sum = eq_sum[EQ_SUMMARY_COLS].reset_index(drop=True)
+        else:
+            sys_sum = pd.DataFrame(columns=SUMMARY_COLS)
+            eq_sum  = pd.DataFrame(columns=EQ_SUMMARY_COLS)
+
+        # Material summary uses Demand_Qty (in material UOM)
+        if ({"Material_Code", "Material_Name", "UOM", "Demand_Qty"}
+                .issubset(out_df.columns) and len(out_df)):
+            mat_sum = (out_df.groupby(
+                          ["Material_Code", "Material_Name", "UOM"],
+                          as_index=False, sort=False)["Demand_Qty"].sum())
+            mat_sum["Demand_Qty"] = mat_sum["Demand_Qty"].round(3)
+            mat_sum = mat_sum.sort_values("Material_Code").reset_index(drop=True)
+            mat_sum.columns = MAT_SUMMARY_COLS
+        else:
+            mat_sum = pd.DataFrame(columns=MAT_SUMMARY_COLS)
+
+        # ── Main df + grand total row (sums numeric cols) ──
+        main_df = out_df.copy()
+        if len(main_df) > 0:
+            num_cols = main_df.select_dtypes(include="number").columns.tolist()
+            gt = {c: "" for c in main_df.columns}
+            gt[main_df.columns[0]] = "GRAND TOTAL"
+            for c in num_cols:
+                try: gt[c] = round(float(main_df[c].sum()), 3)
+                except Exception: pass
+            main_df = pd.concat([main_df, pd.DataFrame([gt])], ignore_index=True)
+
+        TITLE_ROW, HEADER_ROW, DATA_START = 4, 5, 6
+        n_cols = len(main_df.columns)
+
+        main_df.to_excel(writer, index=False, sheet_name=sname, startrow=HEADER_ROW)
+        ws = writer.sheets[sname]
+
+        title_fmt = wb.add_format({"bold": True, "font_size": 13, "font_color": "#FFFFFF",
+            "bg_color": cs["title_bg"], "align": "center", "valign": "vcenter", "border": 0})
+        header_fmt = wb.add_format({"bold": True, "font_size": 10, "font_color": "#FFFFFF",
+            "bg_color": cs["header_bg"], "align": "center", "valign": "vcenter", "border": 1})
+        data_fmt = wb.add_format({"font_size": 9, "border": 1, "valign": "vcenter"})
+        total_fmt = wb.add_format({"bold": True, "font_size": 10, "border": 1,
+            "bg_color": cs["total_bg"], "font_color": cs["total_fg"], "valign": "vcenter"})
+        sub_title_fmt = wb.add_format({"bold": True, "font_size": 11, "italic": True,
+            "font_color": "#FFFFFF", "bg_color": cs["header_bg"], "align": "left",
+            "valign": "vcenter", "border": 1})
+        meta_label_fmt = wb.add_format({"font_size": 8, "bold": True, "align": "right",
+            "valign": "vcenter", "font_color": "#555555"})
+        meta_value_fmt = wb.add_format({"font_size": 8, "align": "left",
+            "valign": "vcenter", "font_color": "#333333"})
+
+        # Logo + meta
+        if os.path.exists(LOGO_PATH):
+            _logo_buf = io.BytesIO()
+            with _PILImage.open(LOGO_PATH) as _img:
+                _img = _img.resize((121, 83), _PILImage.Resampling.LANCZOS)
+                _img.save(_logo_buf, format="PNG", dpi=(96, 96))
+            _logo_buf.seek(0)
+            ws.insert_image(0, 0, "logo.png", {"image_data": _logo_buf,
+                "x_offset": 4, "y_offset": 4, "object_position": 1})
+        for _r in range(4):
+            ws.set_row(_r, 16)
+        if n_cols >= 2:
+            _gen_time = datetime.now().strftime("%Y-%m-%d  %H:%M")
+            ws.write(1, n_cols - 2, "Report Generated:", meta_label_fmt)
+            ws.write(1, n_cols - 1, _gen_time, meta_value_fmt)
+            ws.write(2, n_cols - 2, "Generated By:", meta_label_fmt)
+            ws.write(2, n_cols - 1, "Smart Material Estimator", meta_value_fmt)
+
+        # Title bar
+        if title and n_cols > 1:
+            ws.merge_range(TITLE_ROW, 0, TITLE_ROW, n_cols - 1, title, title_fmt)
+        elif title:
+            ws.write(TITLE_ROW, 0, title, title_fmt)
+        ws.set_row(TITLE_ROW, 22)
+
+        # Header row
+        for col_i, col_name in enumerate(main_df.columns):
+            ws.write(HEADER_ROW, col_i, col_name, header_fmt)
+        ws.set_row(HEADER_ROW, 18)
+        ws.autofilter(HEADER_ROW, 0, HEADER_ROW, n_cols - 1)
+
+        # Data rows
+        for row_i, row_vals in enumerate(main_df.itertuples(index=False, name=None)):
+            is_gt = (row_i == len(main_df) - 1) and len(main_df) > 0
+            fmt = total_fmt if is_gt else data_fmt
+            for col_i, val in enumerate(row_vals):
+                cell_val = ("" if (val is None or
+                                   (isinstance(val, float) and np.isnan(val))) else val)
+                ws.write(DATA_START + row_i, col_i, cell_val, fmt)
+
+        # ── helper: write a summary block at row `start_row` and return next free row ──
+        def _write_summary_block(start_row, sub_title, cols, df):
+            blank_row = start_row
+            sub_row   = blank_row + 1
+            hdr_row   = sub_row + 1
+            data_r    = hdr_row + 1
+
+            span = min(n_cols, len(cols))
+            if span > 1:
+                ws.merge_range(sub_row, 0, sub_row, span - 1, sub_title, sub_title_fmt)
+            else:
+                ws.write(sub_row, 0, sub_title, sub_title_fmt)
+            ws.set_row(sub_row, 20)
+
+            for col_i, col_name in enumerate(cols):
+                ws.write(hdr_row, col_i, col_name, header_fmt)
+            ws.set_row(hdr_row, 18)
+
+            for row_i, row_vals in enumerate(df[cols].itertuples(index=False, name=None)):
+                for col_i, val in enumerate(row_vals):
+                    cell_val = ("" if (val is None or
+                                       (isinstance(val, float) and np.isnan(val))) else val)
+                    ws.write(data_r + row_i, col_i, cell_val, data_fmt)
+
+            end_row = data_r + max(len(df) - 1, 0)
+            if len(df) > 0:
+                # Grand total — sum only the numeric column at index 2 (or last col)
+                gt_row = data_r + len(df)
+                ws.write(gt_row, 0, "GRAND TOTAL", total_fmt)
+                for col_i in range(1, len(cols)):
+                    if col_i == len(cols) - 1:
+                        try:
+                            ws.write(gt_row, col_i,
+                                     round(float(df[cols[col_i]].sum()), 3), total_fmt)
+                        except Exception:
+                            ws.write(gt_row, col_i, "", total_fmt)
+                    else:
+                        ws.write(gt_row, col_i, "", total_fmt)
+                end_row = gt_row
+            return end_row
+
+        # Append three summaries, each preceded by one blank row
+        cur = DATA_START + len(main_df)            # row index right after main data
+        cur = _write_summary_block(cur, "Summary by System Code (Total SQM)",
+                                    SUMMARY_COLS, sys_sum)
+        cur = _write_summary_block(cur + 1, "Summary by Equipment (Total SQM)",
+                                    EQ_SUMMARY_COLS, eq_sum)
+        cur = _write_summary_block(cur + 1, "Summary by Material (Total Qty)",
+                                    MAT_SUMMARY_COLS, mat_sum)
+
+        # Auto-width across main + 3 summary blocks
+        def _max_len(series):
+            return series.str.len().max() if len(series) else 0
+        for col_i in range(n_cols):
+            cands = []
+            mcol = main_df.iloc[:, col_i].fillna("").astype(str)
+            cands.append(max(len(str(main_df.columns[col_i])), _max_len(mcol)))
+            if col_i < len(SUMMARY_COLS):
+                sc = sys_sum.iloc[:, col_i].fillna("").astype(str) if len(sys_sum) else pd.Series([], dtype=str)
+                cands.append(max(len(str(SUMMARY_COLS[col_i])), _max_len(sc)))
+            if col_i < len(EQ_SUMMARY_COLS):
+                ec = eq_sum.iloc[:, col_i].fillna("").astype(str) if len(eq_sum) else pd.Series([], dtype=str)
+                cands.append(max(len(str(EQ_SUMMARY_COLS[col_i])), _max_len(ec)))
+            if col_i < len(MAT_SUMMARY_COLS):
+                mc = mat_sum.iloc[:, col_i].fillna("").astype(str) if len(mat_sum) else pd.Series([], dtype=str)
+                cands.append(max(len(str(MAT_SUMMARY_COLS[col_i])), _max_len(mc)))
+            ws.set_column(col_i, col_i, min(int(max(cands)) + 3, 42))
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        wb = writer.book
+        for spec in sheets:
+            _write_sheet(writer, wb, spec)
+    return buf.getvalue()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRINT HELPER — emits a self-contained printable HTML file as a data: URL
+# that opens in a new browser tab and auto-fires window.print().
+# Used by per-equipment Print buttons in the Equipment Report,
+# Location Based, and All Equipment views.
+# ─────────────────────────────────────────────────────────────────────────────
+def _build_print_html(*, title: str, accent: str = "#F59E0B",
+                       sections: list) -> str:
+    """sections: list of dicts, each one of:
+        {"kind": "kv",       "title": str, "rows": [("Label", "Value"), …]}
+        {"kind": "table",    "title": str, "columns": [str], "rows": [[…]]}
+        {"kind": "syscode",  "title": str, "code": str, "name": str,
+                              "sqm": float|None, "columns": [str], "rows": [[…]]}
+        {"kind": "summary",  "title": str, "columns": [str], "rows": [[…]],
+                              "grand_total": (label, last-column-value)|None}
+    Returns a complete HTML document string.
+    """
+    import html as _html_mod
+    css = f"""
+      *,*::before,*::after {{ box-sizing:border-box; margin:0; padding:0; }}
+      body {{ font-family:'Inter','Helvetica',sans-serif; color:#0F172A;
+             background:#FFFFFF; padding:24px; font-size:12px; }}
+      h1 {{ font-size:18px; font-weight:800; color:#0F172A;
+            border-left:5px solid {accent}; padding-left:12px;
+            margin:0 0 4px; line-height:1.15; letter-spacing:-.2px; }}
+      .meta {{ font-size:10px; color:#64748B; margin-bottom:18px; }}
+      h2 {{ font-size:13px; font-weight:700; color:#FFFFFF; background:#1E293B;
+            padding:6px 10px; margin:18px 0 0; letter-spacing:.06em;
+            text-transform:uppercase; border-radius:3px 3px 0 0; }}
+      .syscode-h2 {{ background:linear-gradient(90deg,{accent},#D97706);
+                     color:#000; }}
+      table {{ width:100%; border-collapse:collapse; font-size:11px;
+              margin-bottom:0; }}
+      th {{ background:#0F172A; color:#FFFFFF; font-weight:700;
+           padding:6px 8px; text-align:left; border:1px solid #1E293B;
+           letter-spacing:.05em; text-transform:uppercase; font-size:9.5px; }}
+      td {{ padding:5px 8px; border:1px solid #E2E8F0; color:#1E293B;
+           vertical-align:top; }}
+      tbody tr:nth-child(even) td {{ background:#F8FAFC; }}
+      tr.gt td {{ background:#FDE68A !important; font-weight:800; color:#000; }}
+      .kv {{ display:grid; grid-template-columns:160px 1fr; row-gap:4px;
+            column-gap:14px; background:#F1F5F9; border:1px solid #E2E8F0;
+            border-radius:4px; padding:10px 14px; margin:8px 0 6px; }}
+      .kv-l {{ font-size:10px; color:#64748B; text-transform:uppercase;
+              letter-spacing:.06em; font-weight:700; }}
+      .kv-v {{ font-size:12px; color:#0F172A; font-weight:600;
+              font-family:'JetBrains Mono','Menlo',monospace; }}
+      .syscode-meta {{ display:flex; align-items:center; gap:12px;
+                        background:#FEF3C7; border:1px solid #FCD34D;
+                        border-bottom:none; padding:6px 10px;
+                        font-size:11px; font-weight:700; }}
+      .syscode-meta .badge {{ background:{accent}; color:#000;
+                              padding:2px 8px; border-radius:3px;
+                              font-family:'JetBrains Mono',monospace;
+                              font-weight:800; font-size:11px; }}
+      .right {{ text-align:right;
+                font-family:'JetBrains Mono','Menlo',monospace; }}
+      @page {{ margin:0.5cm; }}
+      @media print {{
+        body {{ padding:8mm; }}
+        h1 {{ break-after:avoid; }}
+        h2 {{ break-after:avoid; }}
+        table {{ break-inside:auto; }}
+        tr {{ break-inside:avoid; }}
+      }}
+    """
+    _esc = lambda v: _html_mod.escape(str(v if v is not None else ""))
+    def _fmt_cell(v, col_name=""):
+        if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
+            return "", ""
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if any(k in col_name.lower() for k in
+                   ("qty","sqm","demand","alloc","short","ord","avail","total","fulfil","coverage","pct","%")):
+                return f"{v:,.2f}".rstrip("0").rstrip(".") if isinstance(v, float) and v == int(v) else f"{v:,.3f}".rstrip("0").rstrip(".") if isinstance(v, float) else f"{v:,}", "right"
+            return _esc(v), ""
+        return _esc(v), ""
+
+    def _render_table(columns, rows, gt_label=None):
+        thead = "".join(f"<th>{_esc(c)}</th>" for c in columns)
+        body = []
+        for ri, r in enumerate(rows):
+            is_gt = gt_label and str(r[0]).startswith(gt_label)
+            tds = []
+            for ci, v in enumerate(r):
+                txt, cls = _fmt_cell(v, columns[ci] if ci < len(columns) else "")
+                tds.append(f'<td class="{cls}">{txt}</td>')
+            cls = ' class="gt"' if is_gt else ""
+            body.append(f"<tr{cls}>{''.join(tds)}</tr>")
+        return f"<table><thead><tr>{thead}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+
+    parts = []
+    gen_time = datetime.now().strftime("%Y-%m-%d  %H:%M")
+    parts.append(f'<h1>{_esc(title)}</h1>')
+    parts.append(f'<div class="meta">Generated: {gen_time}  ·  Smart Material Estimator</div>')
+
+    for sec in sections:
+        kind = sec.get("kind", "table")
+        sec_title = sec.get("title", "")
+        if kind == "kv":
+            if sec_title:
+                parts.append(f'<h2>{_esc(sec_title)}</h2>')
+            rows = sec.get("rows") or []
+            kv_html = "".join(
+                f'<div class="kv-l">{_esc(l)}</div><div class="kv-v">{_esc(v)}</div>'
+                for l, v in rows)
+            parts.append(f'<div class="kv">{kv_html}</div>')
+        elif kind == "syscode":
+            parts.append(
+                f'<div class="syscode-meta">'
+                f'<span class="badge">Code {_esc(sec.get("code",""))}</span>'
+                f'<span>{_esc(sec.get("name",""))}</span>'
+                f'<span style="margin-left:auto;">'
+                f'{f"{float(sec['sqm']):,.2f} SQM" if sec.get("sqm") is not None else ""}'
+                f'</span></div>'
+            )
+            parts.append(_render_table(sec.get("columns") or [],
+                                        sec.get("rows") or []))
+        elif kind == "summary":
+            if sec_title:
+                parts.append(f'<h2>{_esc(sec_title)}</h2>')
+            rows = sec.get("rows") or []
+            if sec.get("grand_total"):
+                gt_label, gt_val = sec["grand_total"]
+                rows = list(rows) + [[gt_label] + [""] * (len(sec["columns"]) - 2) + [gt_val]]
+            parts.append(_render_table(sec.get("columns") or [], rows,
+                                       gt_label="GRAND TOTAL"))
+        else:  # plain table
+            if sec_title:
+                parts.append(f'<h2>{_esc(sec_title)}</h2>')
+            parts.append(_render_table(sec.get("columns") or [],
+                                        sec.get("rows") or []))
+
+    body = "\n".join(parts)
+    return f"""<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<title>{_esc(title)}</title>
+<style>{css}</style>
+</head><body>
+{body}
+<script>window.addEventListener("load", function() {{ setTimeout(function() {{ window.print(); }}, 250); }});</script>
+</body></html>"""
+
+
+def _per_equipment_payload(
+    *, tag: str, tag_alloc: pd.DataFrame, eq_row,
+    inv_df: pd.DataFrame, color_scheme: str = "overview",
+):
+    """Build (xlsx_bytes, print_html) for ONE equipment.
+
+    Shared by Equipment Report (Location Based / All Equipment) views.
+    Excel = single sheet with main alloc table + 3 summary blocks (same
+    layout as a per-location download but scoped to one equipment).
+    Print = HTML mirror of the on-screen layout (equipment KV + one
+    syscode block per system code with its material table).
+    """
+    # Enrich alloc with inventory cols so the Excel matches per-location format
+    _inv_lu = inv_df[["Material_Code","Available_Qty","Ordered_Qty"]].groupby(
+        "Material_Code", as_index=False).first()
+    enriched = tag_alloc.merge(_inv_lu, on="Material_Code", how="left")
+    enriched["Available_Qty"] = enriched["Available_Qty"].fillna(0)
+    enriched["Ordered_Qty"]   = enriched["Ordered_Qty"].fillna(0)
+    keep = ["Equipment_Tag_No.","Lining_System_Code","Lining_System_Short_Name",
+            "Total_SQM","Material_Code","Material_Name","UOM",
+            "Demand_Qty","Available_Qty","Ordered_Qty",
+            "Allocated_Qty","Shortfall_Qty","Fulfillment_Pct"]
+    enriched = enriched[[c for c in keep if c in enriched.columns]]
+
+    xlsx = _location_report_excel(sheets=[{
+        "name":         str(tag)[:31],
+        "df":           enriched,
+        "title":        f"Equipment Report — {tag}",
+        "color_scheme": color_scheme,
+    }])
+
+    # ── Print HTML — KV section + one syscode block per code ──
+    eq_total_sqm = float(enriched.drop_duplicates(
+        subset=["Lining_System_Code"])["Total_SQM"].sum()) if len(enriched) else 0.0
+
+    sections = [{"kind":"kv","title":"Equipment Details","rows":[
+        ("Equipment Tag",   str(tag)),
+        ("Name",            str(eq_row.get("Name", "") if hasattr(eq_row, "get") else getattr(eq_row, "Name", ""))),
+        ("Type",            str(eq_row.get("Type", "") if hasattr(eq_row, "get") else getattr(eq_row, "Type", ""))),
+        ("Location",        str(eq_row.get("Location", "") if hasattr(eq_row, "get") else getattr(eq_row, "Location", ""))),
+        ("Substrate",       str(eq_row.get("Substrate", "") or "—" if hasattr(eq_row, "get") else (getattr(eq_row, "Substrate", "") or "—"))),
+        ("Material Spec.",  str(eq_row.get("Material_Spec", "") or "—" if hasattr(eq_row, "get") else (getattr(eq_row, "Material_Spec", "") or "—"))),
+        ("Total SQM",       f"{eq_total_sqm:,.2f}"),
+    ]}]
+
+    mat_cols = ["Material Code","Material Name","UOM","Demand","Available",
+                "Allocated","Shortfall","Fulfil %","SQM"]
+    for code in sorted(enriched["Lining_System_Code"].unique() if len(enriched) else [],
+                        key=lambda x: int(x) if str(x).isdigit() else 9999):
+        code_rows = enriched[enriched["Lining_System_Code"] == code]
+        if code_rows.empty:
+            continue
+        sname = code_rows["Lining_System_Short_Name"].iloc[0]
+        sqm_v = float(code_rows["Total_SQM"].iloc[0])
+        rows = [[
+            r["Material_Code"], r["Material_Name"], r["UOM"],
+            round(float(r["Demand_Qty"]), 3),
+            round(float(r["Available_Qty"]), 3),
+            round(float(r["Allocated_Qty"]), 3),
+            round(float(r["Shortfall_Qty"]), 3),
+            f'{float(r.get("Fulfillment_Pct", 0) or 0):.1f}%',
+            f"{sqm_v:,.2f}",
+        ] for _, r in code_rows.iterrows()]
+        sections.append({"kind":"syscode","code":str(code),"name":str(sname),
+                         "sqm":sqm_v,"columns":mat_cols,"rows":rows})
+
+    html_doc = _build_print_html(title=f"Equipment Report — {tag}",
+                                   sections=sections)
+    return xlsx, html_doc
+
+
+def _print_button_html(label: str, html_doc: str, key_suffix: str = "") -> str:
+    """Return an `<a>` element styled as a button. Clicking opens the print
+    HTML in a new tab and auto-triggers window.print()."""
+    import base64
+    b64 = base64.b64encode(html_doc.encode("utf-8")).decode("ascii")
+    href = f"data:text/html;base64,{b64}"
+    return (
+        f'<a href="{href}" target="_blank" rel="noopener" '
+        f'class="sme-print-btn" data-k="{key_suffix}" '
+        f'style="display:inline-flex;align-items:center;gap:6px;'
+        f'font-family:\'JetBrains Mono\',monospace;font-size:.66rem;'
+        f'font-weight:700;letter-spacing:.08em;text-transform:uppercase;'
+        f'background:transparent;color:var(--amber);'
+        f'border:1px solid var(--amber);border-radius:6px;'
+        f'padding:.32rem .7rem;cursor:pointer;text-decoration:none;'
+        f'transition:all .15s;">{label}</a>'
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3358,6 +3890,53 @@ with tab3:
                     f"{_tag_codes_count} code(s)  ·  {_tag_sqm_total:,.2f} SQM",
                     expanded=False,
                 ):
+                    # ── Per-equipment Download + Print buttons ───────────────
+                    _eq_df_single = _tag_grp[["Location", "Type", "Equipment No.",
+                                              "System Code", "System Name",
+                                              "Total SQM"]].reset_index(drop=True)
+                    _eq_scheme = _color_map.get(_loc, "overview")
+                    _eq_xlsx = _equipment_report_excel(location_sheets=[{
+                        "name":         str(_tag)[:31],
+                        "df":           _eq_df_single,
+                        "title":        f"Equipment Report — {_tag}",
+                        "color_scheme": _eq_scheme,
+                    }])
+                    _eq_print_html = _build_print_html(
+                        title=f"Equipment Report — {_tag}",
+                        sections=[
+                            {"kind":"kv","title":"Equipment Details","rows":[
+                                ("Equipment Tag",  str(_tag)),
+                                ("Name",           str(_tag_name)),
+                                ("Type",           str(_tag_type)),
+                                ("Location",       str(_loc)),
+                                ("System Codes",   ", ".join(
+                                    sorted({str(c) for c in _tag_grp["System Code"]}))),
+                                ("Total SQM",      f"{float(_tag_sqm_total):,.2f}"),
+                            ]},
+                            {"kind":"table","title":"System Codes",
+                             "columns":["System Code","System Name","Total SQM"],
+                             "rows":[[r["System Code"], r["System Name"],
+                                      round(float(r["Total SQM"]),2)]
+                                     for _, r in _eq_df_single.iterrows()]},
+                        ],
+                    )
+                    _b1, _b2, _ = st.columns([1, 1, 6])
+                    with _b1:
+                        st.download_button(
+                            "⬇ Download",
+                            data=_eq_xlsx,
+                            file_name=f"equipment_{str(_tag).replace('/','_')}_{_today}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_er_eq_{_loc}_{_tag}",
+                            use_container_width=True,
+                        )
+                    with _b2:
+                        st.markdown(
+                            _print_button_html("🖨 Print", _eq_print_html,
+                                                f"er_{_loc}_{_tag}"),
+                            unsafe_allow_html=True,
+                        )
+
                     for _, _row in _tag_grp.iterrows():
                         st.markdown(
                             f'<div style="display:flex;align-items:center;gap:.6rem;'
@@ -3519,6 +4098,27 @@ with tab3:
                 f"·  {_t3a_cansqm:,.1f}/{_t3a_sqm:,.1f} SQM  ·  {t_pct_ae:.1f}%",
                 expanded=False,
             ):
+                # ── Per-equipment Download + Print ──
+                _ae_xlsx, _ae_html = _per_equipment_payload(
+                    tag=tag, tag_alloc=tag_alloc_ae, eq_row=eq_row_ae,
+                    inv_df=inv, color_scheme="overview",
+                )
+                _aeb1, _aeb2, _ = st.columns([1, 1, 6])
+                with _aeb1:
+                    st.download_button(
+                        "⬇ Download",
+                        data=_ae_xlsx,
+                        file_name=f"equipment_{str(tag).replace('/','_')}_{date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_ae_eq_{tag}",
+                        use_container_width=True,
+                    )
+                with _aeb2:
+                    st.markdown(
+                        _print_button_html("🖨 Print", _ae_html, f"ae_{tag}"),
+                        unsafe_allow_html=True,
+                    )
+
                 for code in sorted(tag_alloc_ae["Lining_System_Code"].unique(), key=lambda x: int(x)):
                     code_alloc_ae = tag_alloc_ae[tag_alloc_ae["Lining_System_Code"] == code].copy()
                     sname_ae = code_alloc_ae["Lining_System_Short_Name"].iloc[0]
@@ -3553,12 +4153,28 @@ with tab3:
         with st.expander("💡 Smart Reordering Suggestions — All Equipment", expanded=False):
             render_suggestion_panel(all_eq_tags, "tab3_all")
 
-        # Download
+        # Download — full report with all 3 summary blocks appended
         st.markdown("<br>", unsafe_allow_html=True)
-        _ae_export = ae_alloc.copy()
+        _ae_inv_lu = inv[["Material_Code","Available_Qty","Ordered_Qty"]].groupby(
+            "Material_Code", as_index=False).first()
+        _ae_export = ae_alloc.merge(_ae_inv_lu, on="Material_Code", how="left")
+        _ae_export["Available_Qty"] = _ae_export["Available_Qty"].fillna(0)
+        _ae_export["Ordered_Qty"]   = _ae_export["Ordered_Qty"].fillna(0)
+        _ae_export_cols = [
+            "Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name",
+            "Total_SQM", "Material_Code", "Material_Name", "UOM",
+            "Demand_Qty", "Available_Qty", "Ordered_Qty",
+            "Allocated_Qty", "Shortfall_Qty", "Fulfillment_Pct",
+        ]
+        _ae_export = _ae_export[[c for c in _ae_export_cols if c in _ae_export.columns]]
         st.download_button(
             "⬇ Download All Equipment Report",
-            data=generate_excel_report(_ae_export, "All Equipment — Global Report", color_scheme="overview"),
+            data=_location_report_excel(sheets=[{
+                "name":         "All Equipment",
+                "df":           _ae_export,
+                "title":        "All Equipment — Global Report",
+                "color_scheme": "overview",
+            }]),
             file_name=f"all_equipment_report_{date.today()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="dl_ae_all",
@@ -3675,6 +4291,30 @@ with tab3:
                 f"{_t3_cansqm:,.1f}/{_t3_sqm:,.1f} SQM  ·  {t_pct:.1f}%",
                 expanded=False,
             ):
+                # ── Per-equipment Download + Print ──
+                _lb_xlsx, _lb_html = _per_equipment_payload(
+                    tag=tag, tag_alloc=tag_alloc, eq_row=eq_row,
+                    inv_df=inv,
+                    color_scheme={"Brown Field":"brown_field",
+                                  "TRAIN J":"train_j",
+                                  "TRAIN K":"train_k"}.get(loc, "overview"),
+                )
+                _lbb1, _lbb2, _ = st.columns([1, 1, 6])
+                with _lbb1:
+                    st.download_button(
+                        "⬇ Download",
+                        data=_lb_xlsx,
+                        file_name=f"equipment_{str(tag).replace('/','_')}_{date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_lb_eq_{loc}_{tag}",
+                        use_container_width=True,
+                    )
+                with _lbb2:
+                    st.markdown(
+                        _print_button_html("🖨 Print", _lb_html, f"lb_{loc}_{tag}"),
+                        unsafe_allow_html=True,
+                    )
+
                 c1,c2,c3 = st.columns(3)
                 c1.markdown(f'**Type:** {eq_row["Type"]}')
                 c2.markdown(f'**Substrate:** {eq_row["Substrate"] or "—"}')
@@ -3847,8 +4487,12 @@ with tab3:
         })
         _dl_col.download_button(
             label=f"⬇ {_loc_dl}",
-            data=generate_excel_report(_export_df, f"Location Report – {_loc_dl}",
-                                       color_scheme=_loc_cs),
+            data=_location_report_excel(sheets=[{
+                "name":         _loc_dl[:31],
+                "df":           _export_df,
+                "title":        f"Location Report — {_loc_dl}",
+                "color_scheme": _loc_cs,
+            }]),
             file_name=f"location_report_{_loc_dl.replace(' ', '_')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
@@ -3856,9 +4500,17 @@ with tab3:
         )
 
     if _all_loc_sheets:
+        # Compose multi-sheet payload for the new writer (drop the old
+        # add_grand_total flag — the new writer always adds the GT row).
+        _ms_sheets = [{
+            "name":         s["name"],
+            "df":           s["df"],
+            "title":        s.get("title", s["name"]),
+            "color_scheme": s.get("color_scheme", "dashboard"),
+        } for s in _all_loc_sheets]
         st.download_button(
             "⬇ All Locations — Combined (Multi-Sheet)",
-            data=generate_multi_sheet_excel(_all_loc_sheets),
+            data=_location_report_excel(sheets=_ms_sheets),
             file_name=f"location_report_all_{date.today()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
