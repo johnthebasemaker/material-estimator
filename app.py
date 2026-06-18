@@ -3858,6 +3858,11 @@ with tab3:
         st.markdown('<div class="sec-hdr">Per-Location Expandable List</div>',
                     unsafe_allow_html=True)
 
+        # Shared maps — used by both the per-equipment buttons below AND the
+        # mode-level download buttons further down in this block.
+        _today = date.today()
+        _color_map = {"Brown Field":"brown_field",
+                      "TRAIN J":"train_j", "TRAIN K":"train_k"}
         _loc_badge_cls = {"Brown Field":"loc-bf","TRAIN J":"loc-tj","TRAIN K":"loc-tk"}
 
         for _loc in LOCATION_ORDER:
@@ -3960,11 +3965,9 @@ with tab3:
         st.markdown('<div class="sec-hdr">📥 Download Equipment Report</div>',
                     unsafe_allow_html=True)
         _dl_cols = st.columns(len(LOCATION_ORDER) + 1)
-        _today = date.today()
         _dl_columns = ["Location", "Type", "Equipment No.",
                        "System Code", "System Name", "Total SQM"]
-        _color_map = {"Brown Field":"brown_field",
-                      "TRAIN J":"train_j", "TRAIN K":"train_k"}
+        # _today and _color_map are defined at the top of this block.
 
         # Per-location single-sheet downloads
         for _i, _loc in enumerate(LOCATION_ORDER):
