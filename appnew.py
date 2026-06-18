@@ -627,6 +627,31 @@ html[data-sme-theme="light"] [data-testid="stPopover"] button {
 }
 html[data-sme-theme="light"] .sme-viz-card { background: #FFFFFF !important; }
 
+/* ── FREEZE ZONE — header (78px) + tabs (~44px) + first sub-radio inside
+   each tab all stick together at the top while scrolling. We target the
+   first stRadio descendant of each tab panel and pin it just below the
+   tabs. The tabs themselves already stick at top:78px from the existing
+   STICKY HEADER rule above. ── */
+[data-testid="stTabs"] [role="tabpanel"] [data-testid="stRadio"]:first-of-type,
+[data-testid="stTabs"] [role="tabpanel"] [data-testid="stVerticalBlock"]:first-of-type > [data-testid="stHorizontalBlock"]:first-of-type [data-testid="stRadio"] {
+  position: sticky !important;
+  top: 122px !important;          /* header 78 + tabs ≈44 */
+  z-index: 999980 !important;
+  background: var(--bg0) !important;
+  padding: .35rem .25rem .45rem !important;
+  margin: 0 -.25rem .6rem !important;
+  border-bottom: 1px solid var(--border) !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,.08);
+}
+/* If a tab has no sub-radio, the next-up block (filters, sec-hdr) stays
+   non-sticky — the rule above only matches existing stRadio nodes. */
+
+@media (max-width:768px) {
+  [data-testid="stTabs"] [role="tabpanel"] [data-testid="stRadio"]:first-of-type {
+    top: 108px !important;
+  }
+}
+
 /* ── THEME TOGGLE BUTTON STYLE (top of sidebar) ── */
 .sme-theme-toggle {
   display:flex; align-items:center; justify-content:space-between;
@@ -1963,37 +1988,11 @@ with tab0:
 
         with row1a:
             st.markdown('<div class="sec-hdr">🎯 Overall Coverage</div>', unsafe_allow_html=True)
-            # ── Design integration: SVG gauge (mirrors Claude design) ──
+            # ── Design SVG gauge (Plotly duplicate removed) ──
             st.markdown(
                 render_design_gauge(f_cov, can_sqm, proj_sqm),
                 unsafe_allow_html=True,
             )
-            fig_g = go.Figure(go.Indicator(
-                mode="gauge+number+delta",
-                value=round(f_cov,1),
-                delta={"reference":100,"valueformat":".1f",
-                       "decreasing":{"color":"#EF4444"},"increasing":{"color":"#10B981"}},
-                number={"suffix":"%","font":{"family":"JetBrains Mono","size":36,"color":"var(--t0)"}},
-                gauge={
-                    "axis":{"range":[0,100],"tickwidth":1,
-                            "tickfont":{"family":"JetBrains Mono","size":9}},
-                    "bar":{"color":(
-                        "#10B981" if f_cov>=100 else "#F97316" if f_cov>=90
-                        else "#EAB308" if f_cov>=80 else "#EF4444"), "thickness":0.28},
-                    "bgcolor":"rgba(0,0,0,0)","borderwidth":0,
-                    "steps":[
-                        {"range":[0,50],"color":"rgba(239,68,68,.08)"},
-                        {"range":[50,80],"color":"rgba(234,179,8,.08)"},
-                        {"range":[80,90],"color":"rgba(249,115,22,.08)"},
-                        {"range":[90,100],"color":"rgba(16,185,129,.08)"},
-                    ],
-                },
-                title={"text":f"Coverage  ·  {can_sqm:,.0f} / {proj_sqm:,.0f} SQM Available Material Coverage",
-                       "font":{"family":"JetBrains Mono","size":9,"color":"rgba(148,163,184,.7)"}},
-            ))
-            fig_g.update_layout(paper_bgcolor="rgba(0,0,0,0)",
-                                margin=dict(l=20,r=20,t=30,b=10),height=240)
-            st.plotly_chart(fig_g, use_container_width=True, key="dash_gauge")
 
             # Demand vs Available mini stacked bar
             fig_dm = go.Figure()
@@ -2123,27 +2122,7 @@ with tab0:
                     ),
                     unsafe_allow_html=True,
                 )
-                bar_c = ["#10B981" if c>=100 else "#F97316" if c>=90
-                         else "#EAB308" if c>=80 else "#EF4444" for c in sc_df["Coverage_%"]]
-                fig_sc = go.Figure(go.Bar(
-                    y=sc_df["Code"]+"  "+sc_df["Short_Name"],x=sc_df["Coverage_%"],
-                    orientation="h",marker_color=bar_c,marker_opacity=.8,
-                    text=[f"{v:.0f}%  ({r['SQM_Can']:,.0f}/{r['SQM']:,.0f} SQM)"
-                          for v,(_,r) in zip(sc_df["Coverage_%"],sc_df.iterrows())],
-                    textposition="inside",textfont=dict(family="JetBrains Mono",size=9,color="#fff"),
-                ))
-                fig_sc.add_vline(x=100,line_color="rgba(128,128,128,.2)",
-                                 line_dash="dot",line_width=1)
-                fig_sc.update_layout(paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    margin=dict(l=0,r=30,t=5,b=0),
-                    height=max(220,len(sc_df)*42),
-                    xaxis=dict(range=[0,115],gridcolor="rgba(128,128,128,.08)",
-                               tickfont=dict(family="JetBrains Mono",size=9)),
-                    yaxis=dict(gridcolor="rgba(128,128,128,.08)",
-                               tickfont=dict(family="JetBrains Mono",size=9)),
-                    font=dict(family="JetBrains Mono",size=10,color="rgba(148,163,184,.8)"))
-                st.plotly_chart(fig_sc, use_container_width=True, key="dash_sc_bar")
+                # (Duplicate Plotly bar chart removed — design SVG above is canonical.)
 
                 sc_show = sc_df.copy()
                 sc_show.columns = ["Code","Short Name","SQM Total","Available Material Coverage (SQM)",
@@ -2167,34 +2146,7 @@ with tab0:
                     ),
                     unsafe_allow_html=True,
                 )
-                bar_cm = ["#10B981" if c>=100 else "#F97316" if c>=90
-                          else "#EAB308" if c>=80 else "#EF4444"
-                          for c in mat_rows_d["Coverage_Pct"]]
-                fig_mat = go.Figure(go.Bar(
-                    y=mat_rows_d["Material_Code"]+"  "+mat_rows_d["Material_Name"].fillna("").str[:18],
-                    x=mat_rows_d["Coverage_Pct"],orientation="h",
-                    marker_color=bar_cm,marker_opacity=.8,
-                    text=[f"{v:.0f}%" for v in mat_rows_d["Coverage_Pct"]],
-                    textposition="inside",textfont=dict(family="JetBrains Mono",size=9,color="#fff"),
-                    customdata=mat_rows_d[["Available_Qty","Demand_Qty","Shortfall","UOM"]].values,
-                    hovertemplate=(
-                        "<b>%{y}</b><br>Coverage: %{x:.1f}%<br>"
-                        "Available: %{customdata[0]:,.1f} %{customdata[3]}<br>"
-                        "Demand: %{customdata[1]:,.1f} %{customdata[3]}<br>"
-                        "Shortfall: %{customdata[2]:,.1f} %{customdata[3]}<extra></extra>"
-                    ),
-                ))
-                fig_mat.add_vline(x=100,line_color="rgba(128,128,128,.2)",
-                                  line_dash="dot",line_width=1)
-                fig_mat.update_layout(paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",margin=dict(l=0,r=30,t=5,b=0),
-                    height=max(340,len(mat_rows_d)*34),
-                    xaxis=dict(range=[0,115],gridcolor="rgba(128,128,128,.08)",
-                               tickfont=dict(family="JetBrains Mono",size=9)),
-                    yaxis=dict(gridcolor="rgba(128,128,128,.08)",
-                               tickfont=dict(family="JetBrains Mono",size=9)),
-                    font=dict(family="JetBrains Mono",size=10,color="rgba(148,163,184,.8)"))
-                st.plotly_chart(fig_mat, use_container_width=True, key="dash_mat_bar")
+                # (Duplicate Plotly bar chart removed — design SVG above is canonical.)
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="sec-hdr">📋 Full Material Balance</div>',
@@ -2256,9 +2208,9 @@ with tab0:
         st.markdown('<div class="sec-hdr">🛒 Material Requirement & Procurement — Location / System Code View</div>',
                     unsafe_allow_html=True)
 
-        # KPI strip
-        p1,p2,p3,p4,p5,p6 = st.columns(6)
-        _dd_net_df = f_demand[f_demand["Net_Shortfall"]>0][["Material_Code","Material_Name","Demand_Qty","Available_Qty","Ordered_Qty","Net_Shortfall"]].sort_values("Net_Shortfall", ascending=False).reset_index(drop=True)
+        # KPI strip — cross-UOM "Shortfall Units" / "After Orders (Net)" removed
+        # because summing kg+lt+m² across materials is not a meaningful number.
+        p1,p2,p3,p4 = st.columns(4)
         with p1:
             dbl_click_metric("Equipment", str(len(filtered_tags)), "t0p_equip",
                 "Equipment List", _dd_equip_df)
@@ -2271,12 +2223,6 @@ with tab0:
         with p4:
             dbl_click_metric("SQM Deficit", f"{short_sqm:,.2f}", "t0p_deficit",
                 "SQM Deficit by Equipment & System Code", _dd_def_sqm_df)
-        with p5:
-            dbl_click_metric("Shortfall Units", f"{f_total_short:,.0f}", "t0p_short",
-                "Materials with Shortfall", _dd_def_df)
-        with p6:
-            dbl_click_metric("After Orders (Net)", f"{f_total_net:,.0f}", "t0p_net",
-                "Materials with Net Shortfall (After Orders)", _dd_net_df)
         st.markdown("<br>", unsafe_allow_html=True)
 
         # Per-location, per-system-code breakdown
@@ -2724,12 +2670,6 @@ with tab1:
                      letter-spacing:.08em;color:var(--t4);">Total Demand</div></div>
                 <div><div style="font-family:'JetBrains Mono',monospace;
                      font-size:1.3rem;font-weight:700;
-                     color:{'#EF4444' if gt_short>0 else '#10B981'};">
-                     {gt_short:,.1f}</div>
-                     <div style="font-size:.62rem;text-transform:uppercase;
-                     letter-spacing:.08em;color:var(--t4);">Total Shortfall</div></div>
-                <div><div style="font-family:'JetBrains Mono',monospace;
-                     font-size:1.3rem;font-weight:700;
                      color:{'#10B981' if gt_pct>=100 else '#F97316' if gt_pct>=90 else '#EAB308' if gt_pct>=80 else '#EF4444'};">
                      {gt_pct:.1f}%</div>
                      <div style="font-size:.62rem;text-transform:uppercase;
@@ -2759,7 +2699,10 @@ with tab2:
         n_mats     = alloc_df["Material_Code"].nunique()
         n_short_m  = alloc_df[alloc_df["Shortfall_Qty"]>0]["Material_Code"].nunique()
 
-        k1,k2,k3,k4,k5 = st.columns(5)
+        # Cross-UOM "Total Shortfall" KPI dropped — summing kg+lt+m² across
+        # materials is not a meaningful number. Use the "Need to Order" count
+        # plus the per-material drill-down for actionable shortage info.
+        k1,k2,k3,k4 = st.columns(4)
         _t2_equip_dd = pd.DataFrame({
             "Equipment Tag": session_tags,
             "Name":          [tag_name.get(t, t) for t in session_tags],
@@ -2782,9 +2725,6 @@ with tab2:
             dbl_click_metric("Need to Order", str(n_short_m), "t2_order",
                 "Materials to Procure", _t2_order_dd)
         with k4:
-            dbl_click_metric("Total Shortfall", f"{tot_short:,.1f}", "t2_short",
-                "Shortfall Detail", _t2_order_dd)
-        with k5:
             dbl_click_metric("Overall Coverage", f"{ov_pct:.1f}%", "t2_cov",
                 "Coverage by Material", _t2_cov_dd)
         st.markdown("<br>", unsafe_allow_html=True)
@@ -3017,10 +2957,6 @@ with tab2:
                  font-weight:700;color:#EF4444;">{n_short_m}</div>
                  <div style="font-size:.6rem;text-transform:uppercase;
                  letter-spacing:.08em;color:var(--t4);">To Procure</div></div>
-            <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
-                 font-weight:700;color:#EF4444;">{tot_short:,.1f}</div>
-                 <div style="font-size:.6rem;text-transform:uppercase;
-                 letter-spacing:.08em;color:var(--t4);">Shortfall Units</div></div>
           </div>
         </div>""", unsafe_allow_html=True)
 
@@ -3050,7 +2986,7 @@ with tab2:
 with tab3:
     loc_report_mode = st.radio(
         "View Mode",
-        ["📍 Location Based", "🌐 All Equipment"],
+        ["📍 Location Based", "🌐 All Equipment", "📋 Equipment Report"],
         horizontal=True, key="loc_report_mode",
         label_visibility="collapsed",
     )
@@ -3059,6 +2995,166 @@ with tab3:
     # ── Per-location order state (independent from global session_tags) ──────
     if "loc_order" not in st.session_state:
         st.session_state.loc_order = {}
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 📋 EQUIPMENT REPORT — equipment-wise list with system codes only.
+    # No materials, no quantities. Each row = (Equipment × System Code, Total SQM).
+    # Per-location downloads + combined multi-sheet "All Equipment" download.
+    # ══════════════════════════════════════════════════════════════════════════
+    if loc_report_mode == "📋 Equipment Report":
+        st.markdown('<div class="sec-hdr">📋 Equipment Report — Tags × System Codes</div>',
+                    unsafe_allow_html=True)
+        st.caption("Equipment-wise details only — surface area per system code. No materials, no demand quantities.")
+
+        # Build the master row set: one row per (Equipment, System Code).
+        # Joins eq_master (Location, Type, Tag) with equip_sc (Code, Total SQM).
+        _er = equip_sc[[
+            "Equipment_Tag_No.", "Lining_System_Code",
+            "Lining_System_Short_Name", "Total_SQM_Original"
+        ]].merge(
+            eq_master[["Equipment_Tag_No.", "Location", "Type", "Name"]],
+            on="Equipment_Tag_No.", how="left",
+        )
+        _er = _er.rename(columns={
+            "Equipment_Tag_No.":         "Equipment No.",
+            "Lining_System_Code":        "System Code",
+            "Lining_System_Short_Name":  "System Name",
+            "Total_SQM_Original":        "Total SQM",
+        })
+        _er["Total SQM"] = _er["Total SQM"].round(2)
+        _er = _er[["Location", "Type", "Equipment No.", "Name",
+                   "System Code", "System Name", "Total SQM"]]
+        _er = _er.sort_values(
+            ["Location", "Equipment No.", "System Code"],
+            key=lambda s: s.astype(str) if s.name != "System Code"
+                          else s.astype(str).map(lambda v: int(v) if str(v).isdigit() else 9999)
+        ).reset_index(drop=True)
+
+        # Summary KPIs — pure descriptive counts, no cross-UOM sums.
+        _er_eq_count = _er["Equipment No."].nunique()
+        _er_loc_count = _er["Location"].nunique()
+        _er_codes_count = _er["System Code"].nunique()
+        _er_sqm = round(eq_master["Total_SQM"].sum(), 1)
+        er_k1, er_k2, er_k3, er_k4 = st.columns(4)
+        er_k1.metric("Equipment Tags", f"{_er_eq_count}")
+        er_k2.metric("Locations",       f"{_er_loc_count}")
+        er_k3.metric("System Codes",    f"{_er_codes_count}")
+        er_k4.metric("Total SQM",       f"{_er_sqm:,.1f}")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Per-location expandable list ──────────────────────────────────────
+        st.markdown('<div class="sec-hdr">Per-Location Expandable List</div>',
+                    unsafe_allow_html=True)
+
+        _loc_badge_cls = {"Brown Field":"loc-bf","TRAIN J":"loc-tj","TRAIN K":"loc-tk"}
+
+        for _loc in LOCATION_ORDER:
+            _loc_rows = _er[_er["Location"] == _loc]
+            if _loc_rows.empty:
+                continue
+            _loc_tag_count = _loc_rows["Equipment No."].nunique()
+            _loc_sqm = eq_master[eq_master["Location"] == _loc]["Total_SQM"].sum()
+            _badge_cls = _loc_badge_cls.get(_loc, "loc-bf")
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:.6rem;'
+                f'margin:.4rem 0 .3rem;padding:.5rem .8rem;'
+                f'background:var(--bg2);border:1px solid var(--border);'
+                f'border-radius:var(--r-md);">'
+                f'<span class="loc-badge {_badge_cls}">{_loc}</span>'
+                f'<span style="font-family:\'JetBrains Mono\',monospace;'
+                f'font-size:.72rem;color:var(--t3);">'
+                f'{_loc_tag_count} equipment  ·  {_loc_sqm:,.1f} SQM</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            for _tag, _tag_grp in _loc_rows.groupby("Equipment No.", sort=False):
+                _tag_name = _tag_grp["Name"].iloc[0]
+                _tag_type = _tag_grp["Type"].iloc[0]
+                _tag_sqm_total = _tag_grp["Total SQM"].sum()
+                _tag_codes_count = len(_tag_grp)
+                with st.expander(
+                    f"🏷  {_tag}  ·  {str(_tag_name)[:32]}  ·  {_tag_type}  ·  "
+                    f"{_tag_codes_count} code(s)  ·  {_tag_sqm_total:,.2f} SQM",
+                    expanded=False,
+                ):
+                    for _, _row in _tag_grp.iterrows():
+                        st.markdown(
+                            f'<div style="display:flex;align-items:center;gap:.6rem;'
+                            f'padding:.4rem .65rem;margin:.18rem 0;background:var(--bg3);'
+                            f'border:1px solid var(--border);border-radius:var(--r-sm);">'
+                            f'<span class="code-badge">Code {_row["System Code"]}</span>'
+                            f'<span style="font-size:.78rem;color:var(--t1);">'
+                            f'{_row["System Name"]}</span>'
+                            f'<span style="margin-left:auto;font-family:\'JetBrains Mono\','
+                            f'monospace;font-size:.78rem;font-weight:700;color:var(--amber);">'
+                            f'{_row["Total SQM"]:,.2f} SQM</span></div>',
+                            unsafe_allow_html=True,
+                        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Download buttons (per location + all-equipment multi-sheet) ───────
+        st.markdown('<div class="sec-hdr">📥 Download Equipment Report</div>',
+                    unsafe_allow_html=True)
+        _dl_cols = st.columns(len(LOCATION_ORDER) + 1)
+        _today = date.today()
+        _dl_columns = ["Location", "Type", "Equipment No.",
+                       "System Code", "Total SQM"]
+
+        # Per-location downloads
+        for _i, _loc in enumerate(LOCATION_ORDER):
+            _loc_df = _er[_er["Location"] == _loc][_dl_columns].reset_index(drop=True)
+            _color_map = {"Brown Field":"brown_field", "TRAIN J":"train_j", "TRAIN K":"train_k"}
+            _scheme = _color_map.get(_loc, "overview")
+            with _dl_cols[_i]:
+                st.download_button(
+                    f"⬇ {_loc}",
+                    data=generate_excel_report(
+                        _loc_df,
+                        report_title=f"Equipment Report — {_loc}",
+                        color_scheme=_scheme,
+                    ),
+                    file_name=f"equipment_report_{_loc.replace(' ','_').lower()}_{_today}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_er_{_i}",
+                    use_container_width=True,
+                    disabled=_loc_df.empty,
+                )
+
+        # Combined multi-sheet download (all locations as separate sheets)
+        with _dl_cols[-1]:
+            _all_sheets = []
+            _color_map = {"Brown Field":"brown_field", "TRAIN J":"train_j", "TRAIN K":"train_k"}
+            for _loc in LOCATION_ORDER:
+                _loc_df = _er[_er["Location"] == _loc][_dl_columns].reset_index(drop=True)
+                if _loc_df.empty:
+                    continue
+                _all_sheets.append({
+                    "name":            _loc[:31],
+                    "df":              _loc_df,
+                    "title":           f"Equipment Report — {_loc}",
+                    "color_scheme":    _color_map.get(_loc, "overview"),
+                    "add_grand_total": False,
+                })
+            _all_sheets.append({
+                "name":            "All Equipment",
+                "df":              _er[_dl_columns].reset_index(drop=True),
+                "title":           "Equipment Report — All Locations",
+                "color_scheme":    "overview",
+                "add_grand_total": False,
+            })
+            st.download_button(
+                "⬇ All Equipment (Multi-sheet)",
+                data=generate_multi_sheet_excel(_all_sheets),
+                file_name=f"equipment_report_all_{_today}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_er_all",
+                use_container_width=True,
+            )
+        # Falls through — all downstream blocks in tab3 are guarded by
+        # `if loc_report_mode == "📍 Location Based"` / `"🌐 All Equipment"`
+        # and naturally skip when this mode is selected.
 
     # ══════════════════════════════════════════════════════════════════════════
     # ALL EQUIPMENT MODE
