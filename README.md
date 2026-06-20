@@ -1,4 +1,4 @@
-# 🏗 Smart Material Estimator
+# Smart Material Estimator
 
 A Streamlit desktop web application for priority-based material allocation and
 lining project feasibility planning.
