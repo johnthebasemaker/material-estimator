@@ -915,6 +915,56 @@ def db_available():
     return os.path.exists(DB_PATH)
 
 
+_DEFAULT_LOCATIONS = [
+    ("Brown Field", "#3B82F6", 1),
+    ("TRAIN J",     "#F59E0B", 2),
+    ("TRAIN K",     "#10B981", 3),
+]
+
+
+def _ensure_locations_table() -> None:
+    """Create the locations table if missing and seed defaults on first run."""
+    if not db_available():
+        return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS locations (
+            name        TEXT PRIMARY KEY,
+            badge_color TEXT NOT NULL DEFAULT '#64748B',
+            sort_order  INTEGER NOT NULL DEFAULT 99,
+            added_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    cur.execute("SELECT COUNT(*) AS n FROM locations").fetchone()
+    if cur.execute("SELECT COUNT(*) FROM locations").fetchone()[0] == 0:
+        cur.executemany(
+            "INSERT INTO locations (name, badge_color, sort_order) VALUES (?,?,?)",
+            _DEFAULT_LOCATIONS,
+        )
+    conn.commit(); conn.close()
+
+
+def _refresh_location_order() -> None:
+    """Reload LOCATION_ORDER in-place from DB (idempotent)."""
+    if not db_available():
+        return
+    try:
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT name FROM locations ORDER BY sort_order, name"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return
+    names = [r["name"] for r in rows] if rows else [n for n, _, _ in _DEFAULT_LOCATIONS]
+    LOCATION_ORDER.clear()
+    LOCATION_ORDER.extend(names)
+
+
+_ensure_locations_table()
+_refresh_location_order()
+
+
 def _next_order_id(conn) -> str:
     today = date.today().strftime("%Y%m%d")
     prefix = f"ORD-{today}-"
@@ -3201,12 +3251,19 @@ with tab0:
             st.dataframe(so_show, use_container_width=True, hide_index=True,
                          key="dash_stock_only")
 
-        da, db = st.columns(2)
+        da, da_pdf, db = st.columns(3)
         with da:
-            st.download_button("⬇ Download Material Balance",
+            st.download_button("⬇ Excel — Material Balance",
                 data=generate_excel_report(tbl_show.reset_index(drop=True), "Material Balance", color_scheme="dashboard"),
                 file_name="dashboard_material_balance.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True)
+        with da_pdf:
+            _pdf_download_button("⬇ PDF — Material Balance",
+                df=tbl_show.reset_index(drop=True),
+                title="Material Balance",
+                file_stem="dashboard_material_balance",
+                key="pdf_dash_mb",
                 use_container_width=True)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -3373,24 +3430,39 @@ with tab0:
         st.dataframe(styled_grand,use_container_width=True,hide_index=True,
                      height=50+len(grand_show)*35,key="proc_grand_tbl")
 
-        gc1, gc2 = st.columns(2)
+        gc1, gc1p, gc2, gc2p = st.columns(4)
         with gc1:
-            st.download_button("⬇ Download Grand Procurement Table",
+            st.download_button("⬇ Excel — Grand Procurement",
                 data=generate_excel_report(grand_show.reset_index(drop=True), "Grand Procurement Table", color_scheme="dashboard"),
                 file_name="procurement_grand_total.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
+        with gc1p:
+            _pdf_download_button("⬇ PDF — Grand Procurement",
+                df=grand_show.reset_index(drop=True),
+                title="Grand Procurement Table",
+                file_stem="procurement_grand_total",
+                key="pdf_proc_grand",
+                use_container_width=True)
+        shortage_net = grand[grand["Net_Shortfall"]>0][
+            ["Material_Code","Material_Name","UOM","Available_Qty","Ordered_Qty",
+             "Demand_Qty","Shortfall","Net_Shortfall"]].copy()
+        shortage_net.columns = ["Code","Material Name","UOM","Available","On Order",
+                                "Demand","Shortfall","NET TO ORDER"]
         with gc2:
-            shortage_net = grand[grand["Net_Shortfall"]>0][
-                ["Material_Code","Material_Name","UOM","Available_Qty","Ordered_Qty",
-                 "Demand_Qty","Shortfall","Net_Shortfall"]].copy()
-            shortage_net.columns = ["Code","Material Name","UOM","Available","On Order",
-                                    "Demand","Shortfall","NET TO ORDER"]
             if not shortage_net.empty:
-                st.download_button("⬇ Net Order List Only",
+                st.download_button("⬇ Excel — Net Order List",
                     data=generate_excel_report(shortage_net.reset_index(drop=True), "Net Order List", color_scheme="dashboard"),
                     file_name="net_order_list.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True)
+        with gc2p:
+            if not shortage_net.empty:
+                _pdf_download_button("⬇ PDF — Net Order List",
+                    df=shortage_net.reset_index(drop=True),
+                    title="Net Order List",
+                    file_stem="net_order_list",
+                    key="pdf_net_order",
                     use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3630,8 +3702,7 @@ with tab1:
                     _t1_mat_dd = mat_rows[["Material_Code","Material_Name","Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_Pct"]].reset_index(drop=True)
                     _t1_sk = f"t1_sc_{selected_tag}_{code}"
                     with mi1:
-                        dbl_click_metric("System Code", str(code), f"{_t1_sk}_c",
-                            f"Code {code} — Material Breakdown", _t1_mat_dd)
+                        st.metric("System Code", str(code))
                     with mi2:
                         dbl_click_metric("Short Name", str(sname), f"{_t1_sk}_n",
                             f"{sname} — Material Breakdown", _t1_mat_dd)
@@ -3969,20 +4040,33 @@ with tab2:
         </div>""", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
-        d1, d2 = st.columns(2)
+        d1, d1p, d2, d2p = st.columns(4)
         with d1:
-            st.download_button("⬇ Full Session Report",
+            st.download_button("⬇ Excel — Full Session",
                                data=generate_excel_report(alloc_df, "Session Full Report", color_scheme="session"),
                                file_name="session_full_report.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                use_container_width=True)
+        with d1p:
+            _pdf_download_button("⬇ PDF — Full Session",
+                df=alloc_df, title="Session Full Report",
+                file_stem="session_full_report",
+                key="pdf_session_full",
+                use_container_width=True)
         with d2:
             if not shortage_only.empty:
-                st.download_button("⬇ Order List Only",
+                st.download_button("⬇ Excel — Order List",
                                    data=generate_excel_report(shortage_only, "Order List", color_scheme="session"),
                                    file_name="order_list.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True)
+        with d2p:
+            if not shortage_only.empty:
+                _pdf_download_button("⬇ PDF — Order List",
+                    df=shortage_only, title="Order List",
+                    file_stem="order_list",
+                    key="pdf_order_list",
+                    use_container_width=True)
 
 
         # ── Smart Reordering Suggestions ──────────────────────────────────────
@@ -4083,10 +4167,10 @@ with tab3:
                     tag=tag, tag_alloc=tag_alloc_ae, eq_row=eq_row_ae,
                     inv_df=inv, color_scheme="overview",
                 )
-                _aeb1, _aeb2, _ = st.columns([1, 1, 6])
+                _aeb1, _aeb2, _aeb3, _ = st.columns([1, 1, 1, 5])
                 with _aeb1:
                     st.download_button(
-                        "⬇ Download",
+                        "⬇ Excel",
                         data=_ae_xlsx,
                         file_name=f"equipment_{str(tag).replace('/','_')}_{date.today()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -4094,6 +4178,20 @@ with tab3:
                         use_container_width=True,
                     )
                 with _aeb2:
+                    _pdf_download_button(
+                        "⬇ PDF",
+                        df=tag_alloc_ae[[
+                            "Lining_System_Code","Lining_System_Short_Name",
+                            "Material_Code","Material_Name","UOM",
+                            "Demand_Qty","Allocated_Qty","Shortfall_Qty",
+                            "Fulfillment_Pct",
+                        ]].reset_index(drop=True),
+                        title=f"Equipment Report — {tag}",
+                        file_stem=f"equipment_{str(tag).replace('/','_')}_{date.today()}",
+                        key=f"pdf_ae_eq_{tag}",
+                        use_container_width=True,
+                    )
+                with _aeb3:
                     st.markdown(
                         _print_button_html("🖨 Print", _ae_html, f"ae_{tag}"),
                         unsafe_allow_html=True,
@@ -4296,10 +4394,10 @@ with tab3:
                                   "TRAIN J":"train_j",
                                   "TRAIN K":"train_k"}.get(loc, "overview"),
                 )
-                _lbb1, _lbb2, _ = st.columns([1, 1, 6])
+                _lbb1, _lbb2, _lbb3, _ = st.columns([1, 1, 1, 5])
                 with _lbb1:
                     st.download_button(
-                        "⬇ Download",
+                        "⬇ Excel",
                         data=_lb_xlsx,
                         file_name=f"equipment_{str(tag).replace('/','_')}_{date.today()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -4307,6 +4405,20 @@ with tab3:
                         use_container_width=True,
                     )
                 with _lbb2:
+                    _pdf_download_button(
+                        "⬇ PDF",
+                        df=tag_alloc[[
+                            "Lining_System_Code","Lining_System_Short_Name",
+                            "Material_Code","Material_Name","UOM",
+                            "Demand_Qty","Allocated_Qty","Shortfall_Qty",
+                            "Fulfillment_Pct",
+                        ]].reset_index(drop=True),
+                        title=f"Equipment Report — {tag} ({loc})",
+                        file_stem=f"equipment_{str(tag).replace('/','_')}_{date.today()}",
+                        key=f"pdf_lb_eq_{loc}_{tag}",
+                        use_container_width=True,
+                    )
+                with _lbb3:
                     st.markdown(
                         _print_button_html("🖨 Print", _lb_html, f"lb_{loc}_{tag}"),
                         unsafe_allow_html=True,
@@ -4482,19 +4594,31 @@ with tab3:
             "color_scheme":    _loc_cs,
             "add_grand_total": True,
         })
-        _dl_col.download_button(
-            label=f"⬇ {_loc_dl}",
-            data=_location_report_excel(sheets=[{
-                "name":         _loc_dl[:31],
-                "df":           _export_df,
-                "title":        f"Location Report — {_loc_dl}",
-                "color_scheme": _loc_cs,
-            }]),
-            file_name=f"location_report_{_loc_dl.replace(' ', '_')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key=f"dl_loc_{_loc_dl}",
-        )
+        with _dl_col:
+            _xc, _pc = st.columns(2)
+            with _xc:
+                st.download_button(
+                    label=f"⬇ Excel {_loc_dl}",
+                    data=_location_report_excel(sheets=[{
+                        "name":         _loc_dl[:31],
+                        "df":           _export_df,
+                        "title":        f"Location Report — {_loc_dl}",
+                        "color_scheme": _loc_cs,
+                    }]),
+                    file_name=f"location_report_{_loc_dl.replace(' ', '_')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key=f"dl_loc_{_loc_dl}",
+                )
+            with _pc:
+                _pdf_download_button(
+                    label=f"⬇ PDF {_loc_dl}",
+                    df=_export_df.reset_index(drop=True),
+                    title=f"Location Report — {_loc_dl}",
+                    file_stem=f"location_report_{_loc_dl.replace(' ', '_')}",
+                    key=f"pdf_loc_{_loc_dl}",
+                    use_container_width=True,
+                )
 
     if _all_loc_sheets:
         # Compose multi-sheet payload for the new writer (drop the old
@@ -4668,10 +4792,10 @@ with tab_eqrep:
                                  for _, r in _eq_df_single.iterrows()]},
                     ],
                 )
-                _b1, _b2, _ = st.columns([1, 1, 6])
+                _b1, _b2, _b3, _ = st.columns([1, 1, 1, 5])
                 with _b1:
                     st.download_button(
-                        "⬇ Download",
+                        "⬇ Excel",
                         data=_eq_xlsx,
                         file_name=f"equipment_{str(_tag).replace('/','_')}_{_today}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -4679,6 +4803,15 @@ with tab_eqrep:
                         use_container_width=True,
                     )
                 with _b2:
+                    _pdf_download_button(
+                        "⬇ PDF",
+                        df=_eq_df_single,
+                        title=f"Equipment Report — {_tag}",
+                        file_stem=f"equipment_{str(_tag).replace('/','_')}_{_today}",
+                        key=f"pdf_er_eq_{_loc}_{_tag}",
+                        use_container_width=True,
+                    )
+                with _b3:
                     st.markdown(
                         _print_button_html("🖨 Print", _eq_print_html,
                                             f"er_{_loc}_{_tag}"),
@@ -4711,22 +4844,34 @@ with tab_eqrep:
         _loc_df = _er[_er["Location"] == _loc][_dl_columns].reset_index(drop=True)
         _scheme = _color_map.get(_loc, "overview")
         with _dl_cols[_i]:
-            st.download_button(
-                f"⬇ {_loc}",
-                data=_equipment_report_excel(
-                    location_sheets=[{
-                        "name":         _loc[:31],
-                        "df":           _loc_df,
-                        "title":        f"Equipment Report — {_loc}",
-                        "color_scheme": _scheme,
-                    }],
-                ),
-                file_name=f"equipment_report_{_loc.replace(' ','_').lower()}_{_today}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dl_er_{_i}",
-                use_container_width=True,
-                disabled=_loc_df.empty,
-            )
+            _ex_c, _pd_c = st.columns(2)
+            with _ex_c:
+                st.download_button(
+                    f"⬇ Excel {_loc}",
+                    data=_equipment_report_excel(
+                        location_sheets=[{
+                            "name":         _loc[:31],
+                            "df":           _loc_df,
+                            "title":        f"Equipment Report — {_loc}",
+                            "color_scheme": _scheme,
+                        }],
+                    ),
+                    file_name=f"equipment_report_{_loc.replace(' ','_').lower()}_{_today}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_er_{_i}",
+                    use_container_width=True,
+                    disabled=_loc_df.empty,
+                )
+            with _pd_c:
+                _pdf_download_button(
+                    f"⬇ PDF {_loc}",
+                    df=_loc_df,
+                    title=f"Equipment Report — {_loc}",
+                    file_stem=f"equipment_report_{_loc.replace(' ','_').lower()}_{_today}",
+                    key=f"pdf_er_{_i}",
+                    use_container_width=True,
+                    disabled=_loc_df.empty,
+                )
 
     with _dl_cols[-1]:
         _loc_sheets_payload = []
@@ -4775,10 +4920,176 @@ with tab4:
                 unsafe_allow_html=True)
 
     exec_subview = st.radio(
-        "View", ["⚙️ Execution Plan", "📋 Progress List"],
+        "View",
+        ["⚙️ Execution Plan", "📋 Progress List", "📊 Consumption Comparison"],
         horizontal=True, key="exec_subview", label_visibility="collapsed"
     )
     st.markdown("<hr>", unsafe_allow_html=True)
+
+    # ── Consumption Comparison ────────────────────────────────────────────────
+    if exec_subview == "📊 Consumption Comparison":
+        if not db_available():
+            st.warning("Database required for Consumption Comparison.")
+        else:
+            conn = get_db()
+            _cmp_raw = pd.read_sql("""
+                SELECT entry_date          AS "Date",
+                       equipment_tag       AS "Equipment Tag",
+                       lining_system_code  AS "System Code",
+                       lining_system_name  AS "System Name",
+                       sqm_completed       AS "SQM Done",
+                       material_code       AS "Material Code",
+                       material_name       AS "Material Name",
+                       uom                 AS "UOM",
+                       expected_qty        AS "Expected Qty",
+                       consumed_qty        AS "Actual Qty"
+                FROM consumption_log
+            """, conn)
+            conn.close()
+
+            if _cmp_raw.empty:
+                st.info("No consumption entries recorded yet.")
+            else:
+                # SQM Done is per (Date × Equipment × Code) — must dedupe before
+                # summing so we don't multiply by material-row count.
+                _sqm_per_day = (
+                    _cmp_raw[["Date","Equipment Tag","System Code","SQM Done"]]
+                    .drop_duplicates(subset=["Date","Equipment Tag","System Code"])
+                )
+                _sqm_totals = _sqm_per_day.groupby(
+                    ["Equipment Tag","System Code"], as_index=False
+                )["SQM Done"].sum().rename(columns={"SQM Done":"Total SQM Done"})
+
+                # Aggregate Expected + Actual across all dates per (tag,code,material).
+                _mat_totals = _cmp_raw.groupby(
+                    ["Equipment Tag","System Code","System Name",
+                     "Material Code","Material Name","UOM"],
+                    as_index=False,
+                )[["Expected Qty","Actual Qty"]].sum()
+                _mat_totals = _mat_totals.rename(columns={
+                    "Expected Qty": "Total Expected",
+                    "Actual Qty":   "Total Actual",
+                })
+                _mat_totals["Variance"]   = (
+                    _mat_totals["Total Actual"] - _mat_totals["Total Expected"]
+                ).round(3)
+                _mat_totals["Variance %"] = _mat_totals.apply(
+                    lambda r: round(
+                        (r["Variance"] / r["Total Expected"] * 100)
+                        if r["Total Expected"] > 0 else 0.0, 1),
+                    axis=1,
+                )
+
+                # Enrich with Location, Equipment Name and Surface Area SQM.
+                _eq_lu = eq_master[["Equipment_Tag_No.","Location","Name"]] \
+                    .rename(columns={"Equipment_Tag_No.":"Equipment Tag",
+                                     "Name":"Equipment Name"})
+                _sa_lu = equip_sc[["Equipment_Tag_No.","Lining_System_Code",
+                                   "Total_SQM_Original"]] \
+                    .rename(columns={
+                        "Equipment_Tag_No.":     "Equipment Tag",
+                        "Lining_System_Code":    "System Code",
+                        "Total_SQM_Original":    "Surface Area SQM",
+                    })
+                _cmp = _mat_totals.merge(_eq_lu, on="Equipment Tag", how="left")
+                _cmp = _cmp.merge(_sa_lu, on=["Equipment Tag","System Code"], how="left")
+                _cmp = _cmp.merge(_sqm_totals, on=["Equipment Tag","System Code"], how="left")
+
+                _cmp = _cmp[[
+                    "Location","Equipment Tag","Equipment Name",
+                    "System Code","System Name","Surface Area SQM",
+                    "Material Code","Material Name","UOM",
+                    "Total SQM Done","Total Expected","Total Actual",
+                    "Variance","Variance %",
+                ]].reset_index(drop=True)
+
+                # ── Filters ───────────────────────────────────────────────────
+                fc1, fc2, fc3 = st.columns(3)
+                with fc1:
+                    _loc_opts = sorted(_cmp["Location"].dropna().unique().tolist())
+                    _f_loc = st.multiselect("Location", options=_loc_opts,
+                        default=_loc_opts, key="cmp_loc")
+                with fc2:
+                    _eq_pool = _cmp[_cmp["Location"].isin(_f_loc)] if _f_loc else _cmp
+                    _eq_opts = sorted(_eq_pool["Equipment Tag"].dropna().unique().tolist())
+                    _f_eq  = st.multiselect("Equipment Tag", options=_eq_opts,
+                        default=_eq_opts, key="cmp_eq")
+                with fc3:
+                    _sc_pool = _eq_pool[_eq_pool["Equipment Tag"].isin(_f_eq)] if _f_eq else _eq_pool
+                    _sc_labels = sorted(
+                        {f"Code {r['System Code']} – {r['System Name']}"
+                         for _, r in _sc_pool[["System Code","System Name"]].drop_duplicates().iterrows()},
+                        key=lambda s: int(s.split(" ")[1])
+                    )
+                    _f_sc_raw = st.multiselect("System Code", options=_sc_labels,
+                        default=_sc_labels, key="cmp_sc")
+                    _f_sc = [s.split(" – ")[0].replace("Code ","").strip()
+                             for s in _f_sc_raw]
+
+                _filt = _cmp.copy()
+                if _f_loc: _filt = _filt[_filt["Location"].isin(_f_loc)]
+                if _f_eq:  _filt = _filt[_filt["Equipment Tag"].isin(_f_eq)]
+                if _f_sc:  _filt = _filt[_filt["System Code"].isin(_f_sc)]
+                _filt = _filt.reset_index(drop=True)
+
+                # ── KPI strip ─────────────────────────────────────────────────
+                _t_exp = _filt["Total Expected"].sum()
+                _t_act = _filt["Total Actual"].sum()
+                _t_var = _t_act - _t_exp
+                _t_var_pct = (_t_var / _t_exp * 100) if _t_exp > 0 else 0.0
+                k1,k2,k3,k4 = st.columns(4)
+                k1.metric("Rows",            f"{len(_filt):,}")
+                k2.metric("Total Expected",  f"{_t_exp:,.3f}")
+                k3.metric("Total Actual",    f"{_t_act:,.3f}")
+                k4.metric("Variance",        f"{_t_var:+,.3f}",
+                          delta=f"{_t_var_pct:+.1f}%")
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ── Table ─────────────────────────────────────────────────────
+                def _style_cmp(row):
+                    v = row["Variance %"] or 0
+                    if   v > 1.0:  bg = "rgba(245,158,11,.10)"   # over consumption
+                    elif v < -1.0: bg = "rgba(59,130,246,.10)"   # under consumption
+                    else:          bg = "rgba(16,185,129,.08)"   # on target
+                    return [f"background-color:{bg}"] * len(row)
+
+                st.dataframe(
+                    _filt.style.apply(_style_cmp, axis=1).format({
+                        "Surface Area SQM": "{:,.2f}",
+                        "Total SQM Done":   "{:,.2f}",
+                        "Total Expected":   "{:,.3f}",
+                        "Total Actual":     "{:,.3f}",
+                        "Variance":         "{:+,.3f}",
+                        "Variance %":       "{:+,.1f}%",
+                    }),
+                    use_container_width=True, hide_index=True,
+                    height=min(700, 60 + len(_filt) * 35),
+                    key="cmp_tbl",
+                )
+
+                # ── Downloads ─────────────────────────────────────────────────
+                _cmp_c1, _cmp_c2 = st.columns(2)
+                with _cmp_c1:
+                    st.download_button(
+                        "⬇ Excel — Consumption Comparison",
+                        data=generate_excel_report(
+                            _filt,
+                            f"Consumption Comparison — {date.today()}",
+                            color_scheme="execution"),
+                        file_name=f"consumption_comparison_{date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_cmp_xlsx",
+                        use_container_width=True,
+                    )
+                with _cmp_c2:
+                    _pdf_download_button(
+                        "⬇ PDF — Consumption Comparison",
+                        df=_filt,
+                        title=f"Consumption Comparison — {date.today()}",
+                        file_stem=f"consumption_comparison_{date.today()}",
+                        key="dl_cmp_pdf",
+                        use_container_width=True,
+                    )
 
     if exec_subview == "📋 Progress List":
         if not db_available():
@@ -5001,8 +5312,8 @@ with tab4:
 
     session_tags = st.session_state.session_tags
 
-    if exec_subview == "📋 Progress List":
-        pass  # progress list already rendered above
+    if exec_subview in ("📋 Progress List", "📊 Consumption Comparison"):
+        pass  # sub-view already rendered above
     elif not session_tags:
         st.info("Add equipment tags in the Entry tab first.")
     else:
@@ -5380,19 +5691,29 @@ with tab_consume:
 
                 mat_inputs = {}
                 _row_blockers = []
-                for _, mrow in sc_recipe.iterrows():
+                _shortfall_warnings = []  # collected for batch display below the grid
+                for _row_idx, (_, mrow) in enumerate(sc_recipe.iterrows()):
                     mc    = str(mrow["Material_Code"])
                     for_1 = float(mrow.get("For_1_SQM", 0) or 0)
                     avail = float(mrow.get("Available_Qty", 0) or 0)
+                    uom   = str(mrow.get("UOM", "") or "")
                     required_qty = round(for_1 * _sqm_today, 4)
 
                     c1,c2,c3,c4,c5,c6 = st.columns([2,3,1,1.5,1.7,1.5])
                     c1.markdown(f"<code>{mc}</code>", unsafe_allow_html=True)
                     c2.write(str(mrow.get("Material_Name", "")))
-                    c3.write(str(mrow.get("UOM", "")))
-                    c4.write(f"{avail:,.3f}")
+                    c3.write(uom)
+                    # Available — render in red when stock is 0
+                    if avail <= 0:
+                        c4.markdown(
+                            f"<span style='color:#EF4444;font-weight:700;'>"
+                            f"{avail:,.3f}</span>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        c4.write(f"{avail:,.3f}")
                     c5.write(f"{required_qty:,.3f}")
-                    _act_key = f"form_mat__{ce_tag}__{_code}__{mc}"
+                    _act_key = f"form_mat__{ce_tag}__{_code}__{_row_idx}__{mc}"
                     actual = c6.number_input(
                         "qty",
                         min_value=0.0,
@@ -5403,18 +5724,42 @@ with tab_consume:
                     if actual > avail + 1e-9:
                         st.error(
                             f"❌ {mc}: Actual Consumed ({actual:.3f}) exceeds Available Qty "
-                            f"({avail:.3f}) — only {avail:.3f} {mrow.get('UOM','')} in stock."
+                            f"({avail:.3f}) — only {avail:.3f} {uom} in stock."
                         )
                         _row_blockers.append(mc)
 
+                    # Live shortfall warning when Required > Available.
+                    if _sqm_today > 0 and required_qty > avail + 1e-9:
+                        _short = round(required_qty - avail, 4)
+                        _shortfall_warnings.append(
+                            f"⚠️ **{mc} — {mrow.get('Material_Name','')}**: short by "
+                            f"**{_short:,.3f} {uom}** (need {required_qty:,.3f}, "
+                            f"have {avail:,.3f})."
+                        )
+
                     mat_inputs[mc] = {
                         "material_name": str(mrow.get("Material_Name", "")),
-                        "uom":           str(mrow.get("UOM", "")),
+                        "uom":           uom,
                         "for_1_sqm":     for_1,
                         "available":     avail,
                         "required_qty":  required_qty,
                         "actual_input":  float(actual),
                     }
+
+                # Display the shortfall warnings as a grouped popup-style block.
+                if _shortfall_warnings:
+                    st.markdown(
+                        '<div style="background:rgba(239,68,68,.08);'
+                        'border:1px solid rgba(239,68,68,.35);border-left:4px solid #EF4444;'
+                        'border-radius:6px;padding:.6rem .9rem;margin:.6rem 0;">'
+                        '<div style="font-family:\'JetBrains Mono\',monospace;'
+                        'font-size:.7rem;font-weight:700;letter-spacing:.1em;'
+                        'text-transform:uppercase;color:#EF4444;margin-bottom:.3rem;">'
+                        f'Material Shortfall — Code {_code}</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                    for _msg in _shortfall_warnings:
+                        st.warning(_msg)
 
                 # Live variance preview per row.
                 if _sqm_today > 0:
@@ -5801,14 +6146,24 @@ with tab_consume:
                             except Exception as _e:
                                 st.error(f"❌ Database error: {_e}")
 
-                st.download_button(
-                    "⬇ Download Consumption Log",
-                    data=generate_excel_report(
-                        df_show.drop(columns=["id"], errors="ignore"),
-                        "Daily Consumption Log", color_scheme="overview"),
-                    file_name=f"consumption_log_{date.today()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=False)
+                _cl_c1, _cl_c2, _ = st.columns([1, 1, 4])
+                with _cl_c1:
+                    st.download_button(
+                        "⬇ Excel — Consumption Log",
+                        data=generate_excel_report(
+                            df_show.drop(columns=["id"], errors="ignore"),
+                            "Daily Consumption Log", color_scheme="overview"),
+                        file_name=f"consumption_log_{date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True)
+                with _cl_c2:
+                    _pdf_download_button(
+                        "⬇ PDF — Consumption Log",
+                        df=df_show.drop(columns=["id"], errors="ignore").reset_index(drop=True),
+                        title="Daily Consumption Log",
+                        file_stem=f"consumption_log_{date.today()}",
+                        key="pdf_cons_log",
+                        use_container_width=True)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # RECEIPTS MODE
@@ -6070,14 +6425,25 @@ with tab_consume:
                             except Exception as _e:
                                 st.error(f"❌ Database error: {_e}")
 
-                st.download_button(
-                    "⬇ Download Receipt Log",
-                    data=generate_excel_report(
-                        rlog.drop(columns=["id"], errors="ignore"),
-                        "Material Receipt Log", color_scheme="overview"),
-                    file_name=f"receipt_log_{date.today()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_receipt_log")
+                _rl_c1, _rl_c2, _ = st.columns([1, 1, 4])
+                with _rl_c1:
+                    st.download_button(
+                        "⬇ Excel — Receipt Log",
+                        data=generate_excel_report(
+                            rlog.drop(columns=["id"], errors="ignore"),
+                            "Material Receipt Log", color_scheme="overview"),
+                        file_name=f"receipt_log_{date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_receipt_log",
+                        use_container_width=True)
+                with _rl_c2:
+                    _pdf_download_button(
+                        "⬇ PDF — Receipt Log",
+                        df=rlog.drop(columns=["id"], errors="ignore").reset_index(drop=True),
+                        title="Material Receipt Log",
+                        file_stem=f"receipt_log_{date.today()}",
+                        key="pdf_receipt_log",
+                        use_container_width=True)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # MAIN INVENTORY DASHBOARD
@@ -6144,12 +6510,22 @@ with tab_consume:
                 use_container_width=True, hide_index=True,
                 height=60 + len(_mi_show)*35, key="mi_mat_tbl")
 
-            st.download_button("⬇ Download Inventory Dashboard",
-                data=generate_excel_report(_mi_show.reset_index(drop=True),
-                    f"Inventory Dashboard {_mi_from} to {_mi_to}", color_scheme="overview"),
-                file_name=f"inventory_dashboard_{date.today()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_mi_mat")
+            _mi_c1, _mi_c2, _ = st.columns([1, 1, 4])
+            with _mi_c1:
+                st.download_button("⬇ Excel — Inventory Dashboard",
+                    data=generate_excel_report(_mi_show.reset_index(drop=True),
+                        f"Inventory Dashboard {_mi_from} to {_mi_to}", color_scheme="overview"),
+                    file_name=f"inventory_dashboard_{date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_mi_mat",
+                    use_container_width=True)
+            with _mi_c2:
+                _pdf_download_button("⬇ PDF — Inventory Dashboard",
+                    df=_mi_show.reset_index(drop=True),
+                    title=f"Inventory Dashboard {_mi_from} to {_mi_to}",
+                    file_stem=f"inventory_dashboard_{date.today()}",
+                    key="pdf_mi_mat",
+                    use_container_width=True)
 
         else:  # By System Code
             _mi_recipe_codes = recipe[["Lining_System_Code","Lining_System_Short_Name","Material_Code"]].copy()
@@ -6289,11 +6665,21 @@ with tab_consume:
                         "Ordered Qty":"{:,.3f}","Fulfilled Qty":"{:,.3f}","Pending Qty":"{:,.3f}"}),
                         use_container_width=True, hide_index=True, height=60+len(_ord_detail)*35,
                         key="ord_status_tbl")
-                    st.download_button("⬇ Download Order Status",
-                        data=generate_excel_report(_ord_detail, f"Order Status — {_sel_ord}", color_scheme="execution"),
-                        file_name=f"order_status_{_sel_ord}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_ord_status")
+                    _os_c1, _os_c2, _ = st.columns([1, 1, 4])
+                    with _os_c1:
+                        st.download_button("⬇ Excel — Order Status",
+                            data=generate_excel_report(_ord_detail, f"Order Status — {_sel_ord}", color_scheme="execution"),
+                            file_name=f"order_status_{_sel_ord}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_ord_status",
+                            use_container_width=True)
+                    with _os_c2:
+                        _pdf_download_button("⬇ PDF — Order Status",
+                            df=_ord_detail.reset_index(drop=True),
+                            title=f"Order Status — {_sel_ord}",
+                            file_stem=f"order_status_{_sel_ord}",
+                            key="pdf_ord_status",
+                            use_container_width=True)
 
         # ── Editable Order Draft Grid (shared by Location & System Code modes) ─
         if _ord_mode in ("📍 Location Needs", "⚙️ System Code Needs"):
@@ -6384,14 +6770,26 @@ with tab_consume:
                             _ord_export.insert(0, "Order ID", _oid)
                             _ord_export.insert(1, "Order Date", str(date.today()))
                             _ord_export.insert(2, "Generated By", "Smart Material Estimator & Planner")
-                            st.download_button(
-                                f"⬇ Download Order {_oid}",
-                                data=generate_excel_report(_ord_export,
-                                    f"Procurement Order — {_oid}", color_scheme="execution"),
-                                file_name=f"order_{_oid}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="dl_new_order",
-                            )
+                            _no_c1, _no_c2, _ = st.columns([1, 1, 4])
+                            with _no_c1:
+                                st.download_button(
+                                    f"⬇ Excel — Order {_oid}",
+                                    data=generate_excel_report(_ord_export,
+                                        f"Procurement Order — {_oid}", color_scheme="execution"),
+                                    file_name=f"order_{_oid}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="dl_new_order",
+                                    use_container_width=True,
+                                )
+                            with _no_c2:
+                                _pdf_download_button(
+                                    f"⬇ PDF — Order {_oid}",
+                                    df=_ord_export,
+                                    title=f"Procurement Order — {_oid}",
+                                    file_stem=f"order_{_oid}",
+                                    key="pdf_new_order",
+                                    use_container_width=True,
+                                )
                             del st.session_state["_ord_draft"]
                             st.rerun()
                         except Exception as _oe:
@@ -6643,8 +7041,7 @@ with tab5:
             _t5sc_dd = sc_mat[["Material_Code","Material_Name","UOM","Available_Qty","Demand_Qty","Shortfall","Coverage_%"]].rename(columns={"Coverage_%":"Coverage %"}).reset_index(drop=True)
             _t5sc_sk = f"t5sc_{code}"
             with m1:
-                dbl_click_metric("System Code", f"Code {code}", f"{_t5sc_sk}_c",
-                    f"Code {code} — Material Breakdown", _t5sc_dd)
+                st.metric("System Code", f"Code {code}")
             with m2:
                 dbl_click_metric("Short Name", str(sname), f"{_t5sc_sk}_n",
                     f"{sname} — Material Breakdown", _t5sc_dd)
@@ -6684,7 +7081,7 @@ with tab5:
 
     # ── Downloads ─────────────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
-    dl1, dl1b, dl2 = st.columns(3)
+    dl1, dl1b, dl2, dl2b = st.columns(4)
     with dl1:
         st.download_button(
             "⬇ Excel — Master Table",
@@ -6701,16 +7098,24 @@ with tab5:
             key="pdf_total_ov",
             use_container_width=True,
         )
-    with dl2:
-        if db_available():
-            conn = get_db()
-            full_log = pd.read_sql("SELECT * FROM consumption_log ORDER BY submitted_at DESC", conn)
-            conn.close()
+    if db_available():
+        conn = get_db()
+        full_log = pd.read_sql("SELECT * FROM consumption_log ORDER BY submitted_at DESC", conn)
+        conn.close()
+        with dl2:
             st.download_button(
-                "⬇ Download Full Consumption Log",
+                "⬇ Excel — Full Consumption Log",
                 data=generate_excel_report(full_log, "Full Consumption Log", color_scheme="overview"),
                 file_name=f"consumption_log_full_{date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True)
+        with dl2b:
+            _pdf_download_button(
+                "⬇ PDF — Full Consumption Log",
+                df=full_log.reset_index(drop=True),
+                title="Full Consumption Log",
+                file_stem=f"consumption_log_full_{date.today()}",
+                key="pdf_full_cons_log",
                 use_container_width=True)
 
 
@@ -6737,6 +7142,7 @@ with tab_master:
             "Equipment",
             "LINING SYSTEM MATERIAL CONSM",
             "Materials_DetailsAvailable_Qty",
+            "➕ Add Location",
         ],
         key="md_table_radio",
         horizontal=True,
@@ -6746,8 +7152,119 @@ with tab_master:
         "LINING SYSTEM MATERIAL CONSM":   "recipe",
         "Materials_DetailsAvailable_Qty":  "inventory",
     }
-    db_table = TABLE_MAP[md_table_sel]
     st.markdown("<hr>", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ADD LOCATION mode — dedicated branch (bails before the table-CRUD code).
+    # ══════════════════════════════════════════════════════════════════════════
+    if md_table_sel == "➕ Add Location":
+        st.markdown('<div class="sec-hdr">➕ Add Location</div>',
+                    unsafe_allow_html=True)
+        st.caption(
+            "Locations registered here populate every Location dropdown across the "
+            "app (Dashboard filters, Inventory entry, Master Data → Equipment, etc.). "
+            "Equipment for new locations is added through the Equipment table above."
+        )
+
+        # Existing locations
+        _conn_loc = get_db()
+        _loc_df = pd.read_sql(
+            "SELECT name AS Name, badge_color AS Color, sort_order AS \"Sort Order\", "
+            "added_at AS \"Added At\" FROM locations "
+            "ORDER BY sort_order, name", _conn_loc)
+        _conn_loc.close()
+
+        st.markdown("**Existing Locations**")
+        st.dataframe(_loc_df, use_container_width=True, hide_index=True,
+                     height=min(280, 60 + len(_loc_df) * 35),
+                     key="md_loc_existing_tbl")
+
+        # Add form
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.form("md_add_loc_form", clear_on_submit=True):
+            st.markdown("**New Location**")
+            _lc1, _lc2, _lc3 = st.columns([2, 1, 1])
+            with _lc1:
+                _new_loc_name = st.text_input(
+                    "Location Name *",
+                    placeholder="e.g. TRAIN L",
+                    key="md_new_loc_name",
+                )
+            with _lc2:
+                _new_loc_color = st.color_picker(
+                    "Badge Colour", value="#64748B", key="md_new_loc_color",
+                )
+            with _lc3:
+                _new_loc_sort = st.number_input(
+                    "Sort Order", min_value=1, max_value=999,
+                    value=int(_loc_df["Sort Order"].max() + 1) if len(_loc_df) else 1,
+                    step=1, key="md_new_loc_sort",
+                )
+            _submitted = st.form_submit_button(
+                "💾 Save Location", type="primary", use_container_width=False)
+
+        if _submitted:
+            _nm = (_new_loc_name or "").strip()
+            if not _nm:
+                st.error("❌ Location name is required.")
+            elif _nm in LOCATION_ORDER:
+                st.error(f"❌ Location '{_nm}' already exists.")
+            else:
+                try:
+                    _conn_ins = get_db(); _cur_ins = _conn_ins.cursor()
+                    _cur_ins.execute(
+                        "INSERT INTO locations (name, badge_color, sort_order) "
+                        "VALUES (?,?,?)",
+                        (_nm, _new_loc_color, int(_new_loc_sort)),
+                    )
+                    _conn_ins.commit(); _conn_ins.close()
+                    _refresh_location_order()
+                    st.cache_data.clear()
+                    st.success(f"✅ Location '{_nm}' added. It now appears in every dropdown.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"❌ Database error: {_e}")
+
+        # Delete a location (only non-default ones with no equipment).
+        st.markdown("<br>", unsafe_allow_html=True)
+        _custom_locs = [n for n in LOCATION_ORDER
+                        if n not in {d[0] for d in _DEFAULT_LOCATIONS}]
+        if _custom_locs:
+            st.markdown("**Remove a Custom Location**")
+            _del_col1, _del_col2 = st.columns([2, 1])
+            with _del_col1:
+                _del_loc = st.selectbox(
+                    "Location to remove",
+                    options=[""] + _custom_locs, key="md_del_loc",
+                )
+            with _del_col2:
+                if st.button("🗑️ Remove", key="md_del_loc_btn",
+                             disabled=not _del_loc):
+                    # Block deletion if equipment uses this location
+                    _conn_del = get_db()
+                    _ref_n = _conn_del.execute(
+                        "SELECT COUNT(*) FROM equipment WHERE location = ?",
+                        (_del_loc,)
+                    ).fetchone()[0]
+                    if _ref_n > 0:
+                        _conn_del.close()
+                        st.error(
+                            f"❌ Cannot remove '{_del_loc}': "
+                            f"{_ref_n} equipment record(s) still reference it."
+                        )
+                    else:
+                        _conn_del.execute("DELETE FROM locations WHERE name = ?",
+                                          (_del_loc,))
+                        _conn_del.commit(); _conn_del.close()
+                        _refresh_location_order()
+                        st.cache_data.clear()
+                        st.success(f"✅ Location '{_del_loc}' removed.")
+                        st.rerun()
+        else:
+            st.caption("No custom locations to remove. Defaults are protected.")
+        st.stop()
+
+    db_table = TABLE_MAP[md_table_sel]
 
     # ── Auto-fill helper for Equipment smart entry ─────────────────────────────
     def _get_autofill(code: str) -> dict:
@@ -7169,13 +7686,28 @@ with tab_master:
 
         st.caption("⚠️ Deletion is permanent. Equipment rows also remove the matching sqm_progress record.")
 
-        st.download_button(
-            f"⬇ Download {md_table_sel} Table",
-            data=generate_excel_report(
-                view_df_display.drop(columns=["Sl. No.", "☐ Select"], errors="ignore"),
-                f"{md_table_sel} — Smart Material Estimator",
-                color_scheme=_TABLE_COLOR_MAP.get(db_table, "dashboard")),
-            file_name=f"{db_table}_export_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"dl_{db_table}",
-        )
+        _md_c1, _md_c2, _ = st.columns([1, 1, 4])
+        _md_export_df = view_df_display.drop(
+            columns=["Sl. No.", "☐ Select"], errors="ignore"
+        ).reset_index(drop=True)
+        with _md_c1:
+            st.download_button(
+                f"⬇ Excel — {md_table_sel}",
+                data=generate_excel_report(
+                    _md_export_df,
+                    f"{md_table_sel} — Smart Material Estimator",
+                    color_scheme=_TABLE_COLOR_MAP.get(db_table, "dashboard")),
+                file_name=f"{db_table}_export_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dl_{db_table}",
+                use_container_width=True,
+            )
+        with _md_c2:
+            _pdf_download_button(
+                f"⬇ PDF — {md_table_sel}",
+                df=_md_export_df,
+                title=f"{md_table_sel} — Smart Material Estimator",
+                file_stem=f"{db_table}_export_{date.today()}",
+                key=f"pdf_{db_table}",
+                use_container_width=True,
+            )
