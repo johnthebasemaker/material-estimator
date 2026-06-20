@@ -858,42 +858,52 @@ _ADMIN_PASS = "admin2026"
 
 def _show_login():
     # Design integration: gradient shell + amber-accent card around the form.
-    st.markdown('<div class="sme-login-shell"><div class="sme-login-card">',
-                unsafe_allow_html=True)
-    _, _logo_col, _ = st.columns([1, 1, 1])
-    with _logo_col:
-        if os.path.exists(LOGO_PATH):
-            st.image(LOGO_PATH, width=200)
-    st.markdown("""
-    <div style="text-align:center;margin:.6rem 0 1.2rem;">
-      <div style="font-size:38px;line-height:1;"></div>
-      <div class="sme-login-title">Smart Material Estimator</div>
-      <div class="sme-login-sub">Enterprise Platform · v3</div>
-    </div>""", unsafe_allow_html=True)
-    user = st.text_input("Username", key="_login_user", placeholder="Enter username")
-    pwd  = st.text_input("Password", type="password", key="_login_pass",
-                         placeholder="Enter password")
-    dl_pwd = st.text_input(
-        "Download Password",
-        type="password", key="_login_dl_pwd",
-        placeholder="Used to encrypt all PDF / Excel downloads this session",
-        help="Required for every report download in this session. Min 4 characters.",
-    )
-    if st.button("🔐  Login", use_container_width=True, key="_login_btn"):
-        if user == _ADMIN_USER and pwd == _ADMIN_PASS:
-            if len((dl_pwd or "").strip()) < 4:
-                st.error("❌ Download Password must be at least 4 characters.")
+    # Outer 3-column wrapper horizontally centers the card on wide screens.
+    _outer_l, _outer_c, _outer_r = st.columns([1, 1.4, 1])
+    with _outer_c:
+        st.markdown('<div class="sme-login-shell"><div class="sme-login-card" style="text-align:center;">',
+                    unsafe_allow_html=True)
+        _lg_l, _lg_c, _lg_r = st.columns([1, 1, 1])
+        with _lg_c:
+            if os.path.exists(LOGO_PATH):
+                st.image(LOGO_PATH, width=200)
+        st.markdown("""
+        <div style="text-align:center;margin:.6rem 0 1.2rem;">
+          <div style="font-size:38px;line-height:1;"></div>
+          <div class="sme-login-title">Smart Material Estimator</div>
+          <div class="sme-login-sub">Enterprise Platform · v3</div>
+        </div>""", unsafe_allow_html=True)
+
+        # Wrap inputs in a form so pressing Enter in any field submits.
+        with st.form("_login_form", clear_on_submit=False):
+            user = st.text_input("Username", key="_login_user", placeholder="Enter username")
+            pwd  = st.text_input("Password", type="password", key="_login_pass",
+                                 placeholder="Enter password")
+            dl_pwd = st.text_input(
+                "Download Password",
+                type="password", key="_login_dl_pwd",
+                placeholder="Used to encrypt all PDF / Excel downloads this session",
+                help="Required for every report download in this session. Min 4 characters.",
+            )
+            _submitted = st.form_submit_button(
+                "🔐  Login", use_container_width=True, type="primary"
+            )
+
+        if _submitted:
+            if user == _ADMIN_USER and pwd == _ADMIN_PASS:
+                if len((dl_pwd or "").strip()) < 4:
+                    st.error("❌ Download Password must be at least 4 characters.")
+                else:
+                    st.session_state["_authenticated"] = True
+                    st.session_state["_dl_pwd"] = dl_pwd.strip()
+                    st.rerun()
             else:
-                st.session_state["_authenticated"] = True
-                st.session_state["_dl_pwd"] = dl_pwd.strip()
-                st.rerun()
-        else:
-            st.error("❌ Invalid credentials. Please try again.")
-    st.markdown(
-        '<div style="text-align:center;margin-top:14px;font-size:11px;'
-        'color:var(--t5);">Demo: admin / admin2026 · Set any Download Password (≥4 chars)</div>',
-        unsafe_allow_html=True)
-    st.markdown('</div></div>', unsafe_allow_html=True)
+                st.error("❌ Invalid credentials. Please try again.")
+        st.markdown(
+            '<div style="text-align:center;margin-top:14px;font-size:11px;'
+            'color:var(--t5);">Demo: admin / admin2026 · Set any Download Password (≥4 chars)</div>',
+            unsafe_allow_html=True)
+        st.markdown('</div></div>', unsafe_allow_html=True)
 
 if "_authenticated" not in st.session_state:
     st.session_state["_authenticated"] = False
@@ -2997,17 +3007,19 @@ with tab0:
         ["Equipment Tag", "System Code", "Total SQM", "Coverable SQM", "SQM Deficit"]
     ].sort_values("SQM Deficit", ascending=False).reset_index(drop=True))
 
+    # Shared KPI drill-down frames used by both Project Overview and Procurement views
+    _dd_equip_df = filtered_eq[["Equipment_Tag_No.","Name","Location","Type","Substrate"]].reset_index(drop=True)
+    _dd_sqm_df   = (sqm_ref[sqm_ref["Equipment_Tag_No."].isin(filtered_tags) &
+                            sqm_ref["Lining_System_Code"].isin(sel_codes)]
+                    [["Equipment_Tag_No.","Lining_System_Code","Total_SQM"]]
+                    .sort_values("Total_SQM", ascending=False).reset_index(drop=True))
+
     # ─────────────────────────────────────────────────────────────────────────
     if dash_view == "📈 Project Overview":
     # ─────────────────────────────────────────────────────────────────────────
 
         # KPI strip
         k1,k2,k3,k4,k5,k6,k7 = st.columns(7)
-        _dd_equip_df = filtered_eq[["Equipment_Tag_No.","Name","Location","Type","Substrate"]].reset_index(drop=True)
-        _dd_sqm_df   = (sqm_ref[sqm_ref["Equipment_Tag_No."].isin(filtered_tags) &
-                                sqm_ref["Lining_System_Code"].isin(sel_codes)]
-                        [["Equipment_Tag_No.","Lining_System_Code","Total_SQM"]]
-                        .sort_values("Total_SQM", ascending=False).reset_index(drop=True))
         _dd_cov_df   = f_demand[["Material_Code","Material_Name","Demand_Qty","Available_Qty","Coverage_Pct"]].sort_values("Coverage_Pct").reset_index(drop=True)
         _dd_def_df   = f_demand[f_demand["Shortfall"]>0][["Material_Code","Material_Name","Demand_Qty","Available_Qty","Shortfall"]].sort_values("Shortfall", ascending=False).reset_index(drop=True)
         _dd_crit_df  = f_demand[f_demand["Coverage_Pct"]<50][["Material_Code","Material_Name","Demand_Qty","Available_Qty","Coverage_Pct"]].sort_values("Coverage_Pct").reset_index(drop=True)
