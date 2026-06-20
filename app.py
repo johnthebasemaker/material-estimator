@@ -14,6 +14,179 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from validate_data     import clean_inventory, clean_recipe, clean_equipment
 from allocation_engine import build_demand_matrix
 
+# ── Optional libs for encrypted downloads (Phase 4) ──────────────────────────
+try:
+    import pyzipper  # AES-encrypted ZIP wrapper for .xlsx downloads
+    _HAS_PYZIPPER = True
+except Exception:
+    _HAS_PYZIPPER = False
+try:
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors as _rl_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+    )
+    from reportlab.lib.units import mm
+    _HAS_REPORTLAB = True
+except Exception:
+    _HAS_REPORTLAB = False
+
+
+def _dl_password() -> str:
+    return str(st.session_state.get("_dl_pwd", "")).strip() or "smartmaterial"
+
+
+def _encrypt_xlsx_bytes(raw: bytes, password: str) -> bytes | None:
+    """Return AES-encrypted ZIP bytes containing the raw .xlsx, or None when
+    the encryption lib isn't available. ZIP wrapping is used because neither
+    xlsxwriter nor openpyxl support write-side .xlsx password encryption."""
+    if not _HAS_PYZIPPER or not password:
+        return None
+    buf = io.BytesIO()
+    with pyzipper.AESZipFile(buf, "w",
+                              compression=pyzipper.ZIP_DEFLATED,
+                              encryption=pyzipper.WZ_AES) as zf:
+        zf.setpassword(password.encode("utf-8"))
+        zf.writestr("report.xlsx", raw)
+    return buf.getvalue()
+
+
+def _df_for_pdf(df: pd.DataFrame, max_cols: int = 12) -> pd.DataFrame:
+    """Trim a DataFrame for PDF rendering — drop interactive columns and limit width."""
+    out = df.copy()
+    for c in ("☐ Select", "☐ Del", "Sl. No.", "S.No"):
+        if c in out.columns:
+            out = out.drop(columns=[c])
+    if len(out.columns) > max_cols:
+        out = out.iloc[:, :max_cols]
+    return out
+
+
+def _pdf_from_sheets(sheets: list, password: str) -> bytes:
+    """Build a multi-page password-protected PDF. sheets = list of
+    {name, df, title, color_scheme(optional)} like generate_multi_sheet_excel."""
+    if not _HAS_REPORTLAB:
+        return b""
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        leftMargin=12*mm, rightMargin=12*mm,
+        topMargin=12*mm, bottomMargin=12*mm,
+        encrypt=password if password else None,
+        title="Smart Material Estimator Report",
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "Title", parent=styles["Heading1"],
+        fontSize=14, textColor=_rl_colors.HexColor("#0F172A"),
+        alignment=1, spaceAfter=8,
+    )
+    sub_style = ParagraphStyle(
+        "Sub", parent=styles["Normal"],
+        fontSize=8, textColor=_rl_colors.HexColor("#64748B"),
+        alignment=1, spaceAfter=10,
+    )
+    story = []
+    for i, spec in enumerate(sheets):
+        df = _df_for_pdf(spec["df"])
+        title = spec.get("title", spec.get("name", "Report"))
+        story.append(Paragraph(title, title_style))
+        story.append(Paragraph(
+            f"Generated {date.today().isoformat()} · Smart Material Estimator",
+            sub_style,
+        ))
+        if len(df) == 0:
+            story.append(Paragraph("(no rows)", styles["Normal"]))
+        else:
+            # Convert to strings for the table
+            data = [list(df.columns)]
+            for _, row in df.iterrows():
+                data.append([
+                    f"{v:,.3f}" if isinstance(v, float)
+                    else ("" if pd.isna(v) else str(v))
+                    for v in row.tolist()
+                ])
+            tbl = Table(data, repeatRows=1)
+            tbl.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), _rl_colors.HexColor("#0F172A")),
+                ("TEXTCOLOR",  (0,0), (-1,0), _rl_colors.white),
+                ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE",   (0,0), (-1,-1), 7),
+                ("GRID",       (0,0), (-1,-1), 0.25, _rl_colors.HexColor("#CBD5E1")),
+                ("ALIGN",      (0,0), (-1,-1), "LEFT"),
+                ("VALIGN",     (0,0), (-1,-1), "MIDDLE"),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1),
+                    [_rl_colors.white, _rl_colors.HexColor("#F8FAFC")]),
+            ]))
+            story.append(tbl)
+        if i < len(sheets) - 1:
+            story.append(PageBreak())
+    doc.build(story)
+    return buf.getvalue()
+
+
+def _pdf_from_df(df: pd.DataFrame, title: str, password: str) -> bytes:
+    return _pdf_from_sheets([{"name": title[:31], "df": df, "title": title}], password)
+
+
+# Monkey-patch st.download_button so every .xlsx download is wrapped in a
+# password-protected AES-ZIP using the session download password. This adds
+# call-site-free encryption for the 20+ existing Excel download buttons.
+_orig_download_button = st.download_button
+def _secure_download_button(label, data=None, file_name=None, mime=None,
+                            key=None, help=None, on_click=None, args=None,
+                            kwargs=None, *, type="secondary",
+                            disabled=False, use_container_width=False,
+                            icon=None):
+    enc_data = data
+    if isinstance(data, (bytes, bytearray)) and file_name and \
+       (file_name.endswith(".xlsx") or file_name.endswith(".xlsm")):
+        encrypted = _encrypt_xlsx_bytes(bytes(data), _dl_password())
+        if encrypted is not None:
+            enc_data = encrypted
+            file_name = file_name.rsplit(".", 1)[0] + ".protected.zip"
+            mime = "application/zip"
+    call_kwargs = dict(
+        label=label, data=enc_data, file_name=file_name, mime=mime,
+        key=key, help=help, on_click=on_click, args=args, kwargs=kwargs,
+        type=type, disabled=disabled, use_container_width=use_container_width,
+    )
+    if icon is not None:
+        call_kwargs["icon"] = icon
+    return _orig_download_button(**call_kwargs)
+st.download_button = _secure_download_button
+
+
+def _pdf_download_button(label: str, *, df: pd.DataFrame | None = None,
+                          sheets: list | None = None, title: str,
+                          file_stem: str, key: str,
+                          use_container_width: bool = False,
+                          disabled: bool = False) -> None:
+    """Render a PDF download button alongside an Excel one. Either pass `df`
+    for a single-sheet PDF, or `sheets` for a multi-page PDF."""
+    if not _HAS_REPORTLAB:
+        st.caption("📄 PDF unavailable — install reportlab to enable.")
+        return
+    if sheets is None and df is not None:
+        sheets = [{"name": title[:31], "df": df, "title": title}]
+    if not sheets:
+        return
+    try:
+        pdf_bytes = _pdf_from_sheets(sheets, _dl_password())
+    except Exception as _e:
+        st.caption(f"📄 PDF generation failed: {_e}")
+        return
+    _orig_download_button(
+        label=label,
+        data=pdf_bytes,
+        file_name=f"{file_stem}.pdf",
+        mime="application/pdf",
+        key=key,
+        use_container_width=use_container_width,
+        disabled=disabled,
+    )
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Smart Material Estimator & Planner",
                    page_icon="", layout="wide",
@@ -700,15 +873,25 @@ def _show_login():
     user = st.text_input("Username", key="_login_user", placeholder="Enter username")
     pwd  = st.text_input("Password", type="password", key="_login_pass",
                          placeholder="Enter password")
+    dl_pwd = st.text_input(
+        "Download Password",
+        type="password", key="_login_dl_pwd",
+        placeholder="Used to encrypt all PDF / Excel downloads this session",
+        help="Required for every report download in this session. Min 4 characters.",
+    )
     if st.button("🔐  Login", use_container_width=True, key="_login_btn"):
         if user == _ADMIN_USER and pwd == _ADMIN_PASS:
-            st.session_state["_authenticated"] = True
-            st.rerun()
+            if len((dl_pwd or "").strip()) < 4:
+                st.error("❌ Download Password must be at least 4 characters.")
+            else:
+                st.session_state["_authenticated"] = True
+                st.session_state["_dl_pwd"] = dl_pwd.strip()
+                st.rerun()
         else:
             st.error("❌ Invalid credentials. Please try again.")
     st.markdown(
         '<div style="text-align:center;margin-top:14px;font-size:11px;'
-        'color:var(--t5);">Demo: admin / admin2026</div>',
+        'color:var(--t5);">Demo: admin / admin2026 · Set any Download Password (≥4 chars)</div>',
         unsafe_allow_html=True)
     st.markdown('</div></div>', unsafe_allow_html=True)
 
@@ -2615,11 +2798,12 @@ _components.html("""
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab0, tab1, tab2, tab3, tab4, tab_consume, tab5, tab_master = st.tabs([
+tab0, tab1, tab2, tab3, tab_eqrep, tab4, tab_consume, tab5, tab_master = st.tabs([
     "📊  Dashboard",
     "🔍  Selective Equipment Entry",
     "📦  Session Order Report",
     "📍  Location Report",
+    "📋  Equipment Report",
     "⚙️  Execution Plan",
     "📦  Inventory",
     "📈  Total Overview",
@@ -2647,12 +2831,23 @@ with tab0:
         sel_locations = st.multiselect(" Location", options=LOCATION_ORDER,
                                         default=LOCATION_ORDER, key="dash_loc")
     with df2_col:
-        all_types_d = sorted(eq_master["Type"].str.strip().unique().tolist())
+        # Type options scoped to selected locations
+        _type_pool = eq_master[eq_master["Location"].isin(sel_locations)] \
+                     if sel_locations else eq_master
+        all_types_d = sorted(_type_pool["Type"].str.strip().dropna().unique().tolist())
         sel_types = st.multiselect(" Type", options=all_types_d,
                                     default=all_types_d, key="dash_type")
     with df3:
+        # System Code options scoped to selected locations + types
+        _eq_pool = eq_master[
+            eq_master["Location"].isin(sel_locations) &
+            eq_master["Type"].str.strip().isin(sel_types)
+        ] if (sel_locations or sel_types) else eq_master
+        _tags_pool = _eq_pool["Equipment_Tag_No."].tolist()
+        _code_pool = dm[dm["Equipment_Tag_No."].isin(_tags_pool)]
         all_codes_d = (
-            dm[["Lining_System_Code","Lining_System_Short_Name"]].drop_duplicates()
+            _code_pool[["Lining_System_Code","Lining_System_Short_Name"]]
+            .drop_duplicates()
             .sort_values("Lining_System_Code", key=lambda x: x.astype(int))
         )
         code_opts_d = [f"Code {r.Lining_System_Code} – {r.Lining_System_Short_Name}"
@@ -2661,7 +2856,8 @@ with tab0:
                                         default=code_opts_d, key="dash_code")
         sel_codes = [c.split(" – ")[0].replace("Code ","").strip() for c in sel_codes_raw]
     with df4:
-        all_desc_d = sorted(eq_master["Substrate"].dropna().unique().tolist())
+        # Substrate options scoped to selected locations + types
+        all_desc_d = sorted(_eq_pool["Substrate"].dropna().unique().tolist())
         sel_substrate = st.multiselect(" Substrate", options=all_desc_d,
                                         default=all_desc_d, key="dash_substrate")
 
@@ -3798,7 +3994,7 @@ with tab2:
 with tab3:
     loc_report_mode = st.radio(
         "View Mode",
-        ["📍 Location Based", "🌐 All Equipment", "📋 Equipment Report"],
+        ["📍 Location Based", "🌐 All Equipment"],
         horizontal=True, key="loc_report_mode",
         label_visibility="collapsed",
     )
@@ -3807,225 +4003,6 @@ with tab3:
     # ── Per-location order state (independent from global session_tags) ──────
     if "loc_order" not in st.session_state:
         st.session_state.loc_order = {}
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # 📋 EQUIPMENT REPORT — equipment-wise list with system codes only.
-    # No materials, no quantities. Each row = (Equipment × System Code, Total SQM).
-    # Per-location downloads + combined multi-sheet "All Equipment" download.
-    # ══════════════════════════════════════════════════════════════════════════
-    if loc_report_mode == "📋 Equipment Report":
-        st.markdown('<div class="sec-hdr">📋 Equipment Report — Tags × System Codes</div>',
-                    unsafe_allow_html=True)
-        st.caption("Equipment-wise details only — surface area per system code. No materials, no demand quantities.")
-
-        # Build the master row set: one row per (Equipment, System Code).
-        # Joins eq_master (Location, Type, Tag) with equip_sc (Code, Total SQM).
-        _er = equip_sc[[
-            "Equipment_Tag_No.", "Lining_System_Code",
-            "Lining_System_Short_Name", "Total_SQM_Original"
-        ]].merge(
-            eq_master[["Equipment_Tag_No.", "Location", "Type", "Name"]],
-            on="Equipment_Tag_No.", how="left",
-        )
-        _er = _er.rename(columns={
-            "Equipment_Tag_No.":         "Equipment No.",
-            "Lining_System_Code":        "System Code",
-            "Lining_System_Short_Name":  "System Name",
-            "Total_SQM_Original":        "Total SQM",
-        })
-        _er["Total SQM"] = _er["Total SQM"].round(2)
-        _er = _er[["Location", "Type", "Equipment No.", "Name",
-                   "System Code", "System Name", "Total SQM"]]
-        _er = _er.sort_values(
-            ["Location", "Equipment No.", "System Code"],
-            key=lambda s: s.astype(str) if s.name != "System Code"
-                          else s.astype(str).map(lambda v: int(v) if str(v).isdigit() else 9999)
-        ).reset_index(drop=True)
-
-        # Summary KPIs — pure descriptive counts, no cross-UOM sums.
-        _er_eq_count = _er["Equipment No."].nunique()
-        _er_loc_count = _er["Location"].nunique()
-        _er_codes_count = _er["System Code"].nunique()
-        _er_sqm = round(eq_master["Total_SQM"].sum(), 1)
-        er_k1, er_k2, er_k3, er_k4 = st.columns(4)
-        er_k1.metric("Equipment Tags", f"{_er_eq_count}")
-        er_k2.metric("Locations",       f"{_er_loc_count}")
-        er_k3.metric("System Codes",    f"{_er_codes_count}")
-        er_k4.metric("Total SQM",       f"{_er_sqm:,.1f}")
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # ── Per-location expandable list ──────────────────────────────────────
-        st.markdown('<div class="sec-hdr">Per-Location Expandable List</div>',
-                    unsafe_allow_html=True)
-
-        # Shared maps — used by both the per-equipment buttons below AND the
-        # mode-level download buttons further down in this block.
-        _today = date.today()
-        _color_map = {"Brown Field":"brown_field",
-                      "TRAIN J":"train_j", "TRAIN K":"train_k"}
-        _loc_badge_cls = {"Brown Field":"loc-bf","TRAIN J":"loc-tj","TRAIN K":"loc-tk"}
-
-        for _loc in LOCATION_ORDER:
-            _loc_rows = _er[_er["Location"] == _loc]
-            if _loc_rows.empty:
-                continue
-            _loc_tag_count = _loc_rows["Equipment No."].nunique()
-            _loc_sqm = eq_master[eq_master["Location"] == _loc]["Total_SQM"].sum()
-            _badge_cls = _loc_badge_cls.get(_loc, "loc-bf")
-            st.markdown(
-                f'<div style="display:flex;align-items:center;gap:.6rem;'
-                f'margin:.4rem 0 .3rem;padding:.5rem .8rem;'
-                f'background:var(--bg2);border:1px solid var(--border);'
-                f'border-radius:var(--r-md);">'
-                f'<span class="loc-badge {_badge_cls}">{_loc}</span>'
-                f'<span style="font-family:\'JetBrains Mono\',monospace;'
-                f'font-size:.72rem;color:var(--t3);">'
-                f'{_loc_tag_count} equipment  ·  {_loc_sqm:,.1f} SQM</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-            for _tag, _tag_grp in _loc_rows.groupby("Equipment No.", sort=False):
-                _tag_name = _tag_grp["Name"].iloc[0]
-                _tag_type = _tag_grp["Type"].iloc[0]
-                _tag_sqm_total = _tag_grp["Total SQM"].sum()
-                _tag_codes_count = len(_tag_grp)
-                with st.expander(
-                    f"🏷  {_tag}  ·  {str(_tag_name)[:32]}  ·  {_tag_type}  ·  "
-                    f"{_tag_codes_count} code(s)  ·  {_tag_sqm_total:,.2f} SQM",
-                    expanded=False,
-                ):
-                    # ── Per-equipment Download + Print buttons ───────────────
-                    _eq_df_single = _tag_grp[["Location", "Type", "Equipment No.",
-                                              "System Code", "System Name",
-                                              "Total SQM"]].reset_index(drop=True)
-                    _eq_scheme = _color_map.get(_loc, "overview")
-                    _eq_xlsx = _equipment_report_excel(location_sheets=[{
-                        "name":         str(_tag)[:31],
-                        "df":           _eq_df_single,
-                        "title":        f"Equipment Report — {_tag}",
-                        "color_scheme": _eq_scheme,
-                    }])
-                    _eq_print_html = _build_print_html(
-                        title=f"Equipment Report — {_tag}",
-                        sections=[
-                            {"kind":"kv","title":"Equipment Details","rows":[
-                                ("Equipment Tag",  str(_tag)),
-                                ("Name",           str(_tag_name)),
-                                ("Type",           str(_tag_type)),
-                                ("Location",       str(_loc)),
-                                ("System Codes",   ", ".join(
-                                    sorted({str(c) for c in _tag_grp["System Code"]}))),
-                                ("Total SQM",      f"{float(_tag_sqm_total):,.2f}"),
-                            ]},
-                            {"kind":"table","title":"System Codes",
-                             "columns":["System Code","System Name","Total SQM"],
-                             "rows":[[r["System Code"], r["System Name"],
-                                      round(float(r["Total SQM"]),2)]
-                                     for _, r in _eq_df_single.iterrows()]},
-                        ],
-                    )
-                    _b1, _b2, _ = st.columns([1, 1, 6])
-                    with _b1:
-                        st.download_button(
-                            "⬇ Download",
-                            data=_eq_xlsx,
-                            file_name=f"equipment_{str(_tag).replace('/','_')}_{_today}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key=f"dl_er_eq_{_loc}_{_tag}",
-                            use_container_width=True,
-                        )
-                    with _b2:
-                        st.markdown(
-                            _print_button_html("🖨 Print", _eq_print_html,
-                                                f"er_{_loc}_{_tag}"),
-                            unsafe_allow_html=True,
-                        )
-
-                    for _, _row in _tag_grp.iterrows():
-                        st.markdown(
-                            f'<div style="display:flex;align-items:center;gap:.6rem;'
-                            f'padding:.4rem .65rem;margin:.18rem 0;background:var(--bg3);'
-                            f'border:1px solid var(--border);border-radius:var(--r-sm);">'
-                            f'<span class="code-badge">Code {_row["System Code"]}</span>'
-                            f'<span style="font-size:.78rem;color:var(--t1);">'
-                            f'{_row["System Name"]}</span>'
-                            f'<span style="margin-left:auto;font-family:\'JetBrains Mono\','
-                            f'monospace;font-size:.78rem;font-weight:700;color:var(--amber);">'
-                            f'{_row["Total SQM"]:,.2f} SQM</span></div>',
-                            unsafe_allow_html=True,
-                        )
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # ── Download buttons (per location + all-equipment multi-sheet) ───────
-        # Excel columns: Location, Type, Equipment No., System Code, System Name, Total SQM
-        # Each sheet ends with: one blank row + per-sheet System Code summary.
-        # Multi-sheet workbook adds final "All System Codes" sheet (codes-only totals).
-        st.markdown('<div class="sec-hdr">📥 Download Equipment Report</div>',
-                    unsafe_allow_html=True)
-        _dl_cols = st.columns(len(LOCATION_ORDER) + 1)
-        _dl_columns = ["Location", "Type", "Equipment No.",
-                       "System Code", "System Name", "Total SQM"]
-        # _today and _color_map are defined at the top of this block.
-
-        # Per-location single-sheet downloads
-        for _i, _loc in enumerate(LOCATION_ORDER):
-            _loc_df = _er[_er["Location"] == _loc][_dl_columns].reset_index(drop=True)
-            _scheme = _color_map.get(_loc, "overview")
-            with _dl_cols[_i]:
-                st.download_button(
-                    f"⬇ {_loc}",
-                    data=_equipment_report_excel(
-                        location_sheets=[{
-                            "name":         _loc[:31],
-                            "df":           _loc_df,
-                            "title":        f"Equipment Report — {_loc}",
-                            "color_scheme": _scheme,
-                        }],
-                    ),
-                    file_name=f"equipment_report_{_loc.replace(' ','_').lower()}_{_today}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dl_er_{_i}",
-                    use_container_width=True,
-                    disabled=_loc_df.empty,
-                )
-
-        # Combined multi-sheet download (per-location sheets +
-        # "All Equipment" sheet + final "All System Codes" totals sheet)
-        with _dl_cols[-1]:
-            _loc_sheets_payload = []
-            for _loc in LOCATION_ORDER:
-                _loc_df = _er[_er["Location"] == _loc][_dl_columns].reset_index(drop=True)
-                if _loc_df.empty:
-                    continue
-                _loc_sheets_payload.append({
-                    "name":         _loc[:31],
-                    "df":           _loc_df,
-                    "title":        f"Equipment Report — {_loc}",
-                    "color_scheme": _color_map.get(_loc, "overview"),
-                })
-            _all_eq_payload = {
-                "name":         "All Equipment",
-                "df":           _er[_dl_columns].reset_index(drop=True),
-                "title":        "Equipment Report — All Locations",
-                "color_scheme": "overview",
-            }
-            st.download_button(
-                "⬇ All Equipment (Multi-sheet)",
-                data=_equipment_report_excel(
-                    location_sheets=_loc_sheets_payload,
-                    all_eq_sheet=_all_eq_payload,
-                    include_all_codes_sheet=True,
-                ),
-                file_name=f"equipment_report_all_{_today}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_er_all",
-                use_container_width=True,
-            )
-        # Falls through — all downstream blocks in tab3 are guarded by
-        # `if loc_report_mode == "📍 Location Based"` / `"🌐 All Equipment"`
-        # and naturally skip when this mode is selected.
 
     # ══════════════════════════════════════════════════════════════════════════
     # ALL EQUIPMENT MODE
@@ -4163,25 +4140,42 @@ with tab3:
         _ae_export = ae_alloc.merge(_ae_inv_lu, on="Material_Code", how="left")
         _ae_export["Available_Qty"] = _ae_export["Available_Qty"].fillna(0)
         _ae_export["Ordered_Qty"]   = _ae_export["Ordered_Qty"].fillna(0)
+        # Enrich with Location from equipment master
+        _ae_export = _ae_export.merge(
+            eq_master[["Equipment_Tag_No.", "Location"]],
+            on="Equipment_Tag_No.", how="left",
+        )
         _ae_export_cols = [
-            "Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name",
+            "Location", "Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name",
             "Total_SQM", "Material_Code", "Material_Name", "UOM",
             "Demand_Qty", "Available_Qty", "Ordered_Qty",
             "Allocated_Qty", "Shortfall_Qty", "Fulfillment_Pct",
         ]
         _ae_export = _ae_export[[c for c in _ae_export_cols if c in _ae_export.columns]]
-        st.download_button(
-            "⬇ Download All Equipment Report",
-            data=_location_report_excel(sheets=[{
-                "name":         "All Equipment",
-                "df":           _ae_export,
-                "title":        "All Equipment — Global Report",
-                "color_scheme": "overview",
-            }]),
-            file_name=f"all_equipment_report_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_ae_all",
-        )
+        _ae_c1, _ae_c2 = st.columns(2)
+        with _ae_c1:
+            st.download_button(
+                "⬇ Excel — All Equipment Report",
+                data=_location_report_excel(sheets=[{
+                    "name":         "All Equipment",
+                    "df":           _ae_export,
+                    "title":        "All Equipment — Global Report",
+                    "color_scheme": "overview",
+                }]),
+                file_name=f"all_equipment_report_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_ae_all",
+                use_container_width=True,
+            )
+        with _ae_c2:
+            _pdf_download_button(
+                "⬇ PDF — All Equipment Report",
+                df=_ae_export,
+                title="All Equipment — Global Report",
+                file_stem=f"all_equipment_report_{date.today()}",
+                key="pdf_ae_all",
+                use_container_width=True,
+            )
 
     from streamlit_sortables import sort_items as _sort3
 
@@ -4511,14 +4505,25 @@ with tab3:
             "title":        s.get("title", s["name"]),
             "color_scheme": s.get("color_scheme", "dashboard"),
         } for s in _all_loc_sheets]
-        st.download_button(
-            "⬇ All Locations — Combined (Multi-Sheet)",
-            data=_location_report_excel(sheets=_ms_sheets),
-            file_name=f"location_report_all_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="dl_loc_all",
-        )
+        _lc1, _lc2 = st.columns(2)
+        with _lc1:
+            st.download_button(
+                "⬇ Excel — All Locations (Multi-Sheet)",
+                data=_location_report_excel(sheets=_ms_sheets),
+                file_name=f"location_report_all_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_loc_all",
+            )
+        with _lc2:
+            _pdf_download_button(
+                "⬇ PDF — All Locations",
+                sheets=_ms_sheets,
+                title=f"Location Report — All Locations ({date.today()})",
+                file_stem=f"location_report_all_{date.today()}",
+                key="pdf_loc_all",
+                use_container_width=True,
+            )
 
     if loc_report_mode == "📍 Location Based":
         # ── Print Report button ───────────────────────────────────────────────
@@ -4556,6 +4561,213 @@ with tab3:
                 render_suggestion_panel(_loc_tags_sugg, f"tab3_{_loc_sugg}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# TAB · EQUIPMENT REPORT (standalone)
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_eqrep:
+    st.markdown('<div class="sec-hdr">📋 Equipment Report — Tags × System Codes</div>',
+                unsafe_allow_html=True)
+    st.caption("Equipment-wise details only — surface area per system code. No materials, no demand quantities.")
+
+    _er = equip_sc[[
+        "Equipment_Tag_No.", "Lining_System_Code",
+        "Lining_System_Short_Name", "Total_SQM_Original"
+    ]].merge(
+        eq_master[["Equipment_Tag_No.", "Location", "Type", "Name"]],
+        on="Equipment_Tag_No.", how="left",
+    )
+    _er = _er.rename(columns={
+        "Equipment_Tag_No.":         "Equipment No.",
+        "Lining_System_Code":        "System Code",
+        "Lining_System_Short_Name":  "System Name",
+        "Total_SQM_Original":        "Total SQM",
+    })
+    _er["Total SQM"] = _er["Total SQM"].round(2)
+    _er = _er[["Location", "Type", "Equipment No.", "Name",
+               "System Code", "System Name", "Total SQM"]]
+    _er = _er.sort_values(
+        ["Location", "Equipment No.", "System Code"],
+        key=lambda s: s.astype(str) if s.name != "System Code"
+                      else s.astype(str).map(lambda v: int(v) if str(v).isdigit() else 9999)
+    ).reset_index(drop=True)
+
+    _er_eq_count = _er["Equipment No."].nunique()
+    _er_loc_count = _er["Location"].nunique()
+    _er_codes_count = _er["System Code"].nunique()
+    _er_sqm = round(eq_master["Total_SQM"].sum(), 1)
+    er_k1, er_k2, er_k3, er_k4 = st.columns(4)
+    er_k1.metric("Equipment Tags", f"{_er_eq_count}")
+    er_k2.metric("Locations",       f"{_er_loc_count}")
+    er_k3.metric("System Codes",    f"{_er_codes_count}")
+    er_k4.metric("Total SQM",       f"{_er_sqm:,.1f}")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown('<div class="sec-hdr">Per-Location Expandable List</div>',
+                unsafe_allow_html=True)
+
+    _today = date.today()
+    _color_map = {"Brown Field":"brown_field",
+                  "TRAIN J":"train_j", "TRAIN K":"train_k"}
+    _loc_badge_cls = {"Brown Field":"loc-bf","TRAIN J":"loc-tj","TRAIN K":"loc-tk"}
+
+    for _loc in LOCATION_ORDER:
+        _loc_rows = _er[_er["Location"] == _loc]
+        if _loc_rows.empty:
+            continue
+        _loc_tag_count = _loc_rows["Equipment No."].nunique()
+        _loc_sqm = eq_master[eq_master["Location"] == _loc]["Total_SQM"].sum()
+        _badge_cls = _loc_badge_cls.get(_loc, "loc-bf")
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:.6rem;'
+            f'margin:.4rem 0 .3rem;padding:.5rem .8rem;'
+            f'background:var(--bg2);border:1px solid var(--border);'
+            f'border-radius:var(--r-md);">'
+            f'<span class="loc-badge {_badge_cls}">{_loc}</span>'
+            f'<span style="font-family:\'JetBrains Mono\',monospace;'
+            f'font-size:.72rem;color:var(--t3);">'
+            f'{_loc_tag_count} equipment  ·  {_loc_sqm:,.1f} SQM</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        for _tag, _tag_grp in _loc_rows.groupby("Equipment No.", sort=False):
+            _tag_name = _tag_grp["Name"].iloc[0]
+            _tag_type = _tag_grp["Type"].iloc[0]
+            _tag_sqm_total = _tag_grp["Total SQM"].sum()
+            _tag_codes_count = len(_tag_grp)
+            with st.expander(
+                f"🏷  {_tag}  ·  {str(_tag_name)[:32]}  ·  {_tag_type}  ·  "
+                f"{_tag_codes_count} code(s)  ·  {_tag_sqm_total:,.2f} SQM",
+                expanded=False,
+            ):
+                _eq_df_single = _tag_grp[["Location", "Type", "Equipment No.",
+                                          "System Code", "System Name",
+                                          "Total SQM"]].reset_index(drop=True)
+                _eq_scheme = _color_map.get(_loc, "overview")
+                _eq_xlsx = _equipment_report_excel(location_sheets=[{
+                    "name":         str(_tag)[:31],
+                    "df":           _eq_df_single,
+                    "title":        f"Equipment Report — {_tag}",
+                    "color_scheme": _eq_scheme,
+                }])
+                _eq_print_html = _build_print_html(
+                    title=f"Equipment Report — {_tag}",
+                    sections=[
+                        {"kind":"kv","title":"Equipment Details","rows":[
+                            ("Equipment Tag",  str(_tag)),
+                            ("Name",           str(_tag_name)),
+                            ("Type",           str(_tag_type)),
+                            ("Location",       str(_loc)),
+                            ("System Codes",   ", ".join(
+                                sorted({str(c) for c in _tag_grp["System Code"]}))),
+                            ("Total SQM",      f"{float(_tag_sqm_total):,.2f}"),
+                        ]},
+                        {"kind":"table","title":"System Codes",
+                         "columns":["System Code","System Name","Total SQM"],
+                         "rows":[[r["System Code"], r["System Name"],
+                                  round(float(r["Total SQM"]),2)]
+                                 for _, r in _eq_df_single.iterrows()]},
+                    ],
+                )
+                _b1, _b2, _ = st.columns([1, 1, 6])
+                with _b1:
+                    st.download_button(
+                        "⬇ Download",
+                        data=_eq_xlsx,
+                        file_name=f"equipment_{str(_tag).replace('/','_')}_{_today}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_er_eq_{_loc}_{_tag}",
+                        use_container_width=True,
+                    )
+                with _b2:
+                    st.markdown(
+                        _print_button_html("🖨 Print", _eq_print_html,
+                                            f"er_{_loc}_{_tag}"),
+                        unsafe_allow_html=True,
+                    )
+
+                for _, _row in _tag_grp.iterrows():
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;gap:.6rem;'
+                        f'padding:.4rem .65rem;margin:.18rem 0;background:var(--bg3);'
+                        f'border:1px solid var(--border);border-radius:var(--r-sm);">'
+                        f'<span class="code-badge">Code {_row["System Code"]}</span>'
+                        f'<span style="font-size:.78rem;color:var(--t1);">'
+                        f'{_row["System Name"]}</span>'
+                        f'<span style="margin-left:auto;font-family:\'JetBrains Mono\','
+                        f'monospace;font-size:.78rem;font-weight:700;color:var(--amber);">'
+                        f'{_row["Total SQM"]:,.2f} SQM</span></div>',
+                        unsafe_allow_html=True,
+                    )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown('<div class="sec-hdr">📥 Download Equipment Report</div>',
+                unsafe_allow_html=True)
+    _dl_cols = st.columns(len(LOCATION_ORDER) + 1)
+    _dl_columns = ["Location", "Type", "Equipment No.",
+                   "System Code", "System Name", "Total SQM"]
+
+    for _i, _loc in enumerate(LOCATION_ORDER):
+        _loc_df = _er[_er["Location"] == _loc][_dl_columns].reset_index(drop=True)
+        _scheme = _color_map.get(_loc, "overview")
+        with _dl_cols[_i]:
+            st.download_button(
+                f"⬇ {_loc}",
+                data=_equipment_report_excel(
+                    location_sheets=[{
+                        "name":         _loc[:31],
+                        "df":           _loc_df,
+                        "title":        f"Equipment Report — {_loc}",
+                        "color_scheme": _scheme,
+                    }],
+                ),
+                file_name=f"equipment_report_{_loc.replace(' ','_').lower()}_{_today}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dl_er_{_i}",
+                use_container_width=True,
+                disabled=_loc_df.empty,
+            )
+
+    with _dl_cols[-1]:
+        _loc_sheets_payload = []
+        for _loc in LOCATION_ORDER:
+            _loc_df = _er[_er["Location"] == _loc][_dl_columns].reset_index(drop=True)
+            if _loc_df.empty:
+                continue
+            _loc_sheets_payload.append({
+                "name":         _loc[:31],
+                "df":           _loc_df,
+                "title":        f"Equipment Report — {_loc}",
+                "color_scheme": _color_map.get(_loc, "overview"),
+            })
+        _all_eq_payload = {
+            "name":         "All Equipment",
+            "df":           _er[_dl_columns].reset_index(drop=True),
+            "title":        "Equipment Report — All Locations",
+            "color_scheme": "overview",
+        }
+        st.download_button(
+            "⬇ Excel — All Equipment (Multi-sheet)",
+            data=_equipment_report_excel(
+                location_sheets=_loc_sheets_payload,
+                all_eq_sheet=_all_eq_payload,
+                include_all_codes_sheet=True,
+            ),
+            file_name=f"equipment_report_all_{_today}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_er_all",
+            use_container_width=True,
+        )
+        _pdf_download_button(
+            "⬇ PDF — All Equipment",
+            sheets=(_loc_sheets_payload + [_all_eq_payload]),
+            title=f"Equipment Report — All Locations ({_today})",
+            file_stem=f"equipment_report_all_{_today}",
+            key="pdf_er_all",
+            use_container_width=True,
+        )
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 · EXECUTION PLAN
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab4:
@@ -4583,13 +4795,13 @@ with tab4:
                     GROUP BY equipment_tag, lining_system_code
                 )
                 SELECT
+                    e.location                                              AS "Location",
                     sp.equipment_tag                                        AS "Equipment Tag",
+                    e.name                                                  AS "Equipment Name",
                     sp.lining_system_code                                   AS "System Code",
                     e.lining_system_short_name                              AS "System Name",
-                    e.location                                              AS "Location",
-                    e.name                                                  AS "Equipment Name",
                     sp.original_sqm                                         AS "Total SQM",
-                    COALESCE(dd.done_sqm, 0.0)                             AS "Done SQM",
+                    COALESCE(dd.done_sqm, 0.0)                             AS "Completed SQM",
                     (sp.original_sqm - COALESCE(dd.done_sqm, 0.0))        AS "Remaining SQM",
                     ROUND(COALESCE(dd.done_sqm, 0.0) * 100.0
                           / NULLIF(sp.original_sqm, 0), 1)                 AS "Completion %"
@@ -4603,6 +4815,22 @@ with tab4:
                 ORDER BY e.location, sp.equipment_tag,
                          CAST(sp.lining_system_code AS INTEGER)
             """, conn)
+
+            # Pull all consumption rows once for the production-detail panels below.
+            cons_df = pd.read_sql("""
+                SELECT entry_date       AS "Date",
+                       equipment_tag    AS "Equipment Tag",
+                       lining_system_code AS "System Code",
+                       lining_system_name AS "System Name",
+                       sqm_completed    AS "SQM Done",
+                       material_code    AS "Material Code",
+                       material_name    AS "Material Name",
+                       uom              AS "UOM",
+                       consumed_qty     AS "Consumed Qty"
+                FROM consumption_log
+                ORDER BY entry_date, equipment_tag,
+                         CAST(lining_system_code AS INTEGER)
+            """, conn)
             conn.close()
 
             prog_df["Status"] = prog_df["Completion %"].apply(
@@ -4612,13 +4840,13 @@ with tab4:
             )
 
             tot_orig = prog_df["Total SQM"].sum()
-            tot_done = prog_df["Done SQM"].sum()
+            tot_done = prog_df["Completed SQM"].sum()
             tot_rem  = prog_df["Remaining SQM"].sum()
             tot_pct  = (tot_done / tot_orig * 100) if tot_orig > 0 else 0.0
 
             pk1, pk2, pk3, pk4 = st.columns(4)
             pk1.metric("Total SQM",     f"{tot_orig:,.2f}")
-            pk2.metric("Done SQM",      f"{tot_done:,.2f}")
+            pk2.metric("Completed SQM", f"{tot_done:,.2f}")
             pk3.metric("Remaining SQM", f"{tot_rem:,.2f}")
             pk4.metric("Completion",    f"{tot_pct:.1f}%")
             st.markdown("<br>", unsafe_allow_html=True)
@@ -4636,6 +4864,12 @@ with tab4:
             if prog_status_f != "All": filt_prog = filt_prog[filt_prog["Status"]   == prog_status_f]
             filt_prog = filt_prog.reset_index(drop=True)
 
+            # Display column order (Status is internal; not shown in table).
+            _prog_cols = ["Location", "Equipment Tag", "Equipment Name",
+                          "System Code", "System Name", "Total SQM",
+                          "Completed SQM", "Remaining SQM", "Completion %"]
+            _prog_view = filt_prog[_prog_cols].copy()
+
             def _style_prog(row):
                 p = row["Completion %"] or 0
                 if p >= 100:  bg, tc = "rgba(16,185,129,.1)", "#10B981"
@@ -4647,26 +4881,123 @@ with tab4:
                 return styles
 
             st.dataframe(
-                filt_prog.style.apply(_style_prog, axis=1).format({
+                _prog_view.style.apply(_style_prog, axis=1).format({
                     "Total SQM":     "{:,.2f}",
-                    "Done SQM":      "{:,.2f}",
+                    "Completed SQM": "{:,.2f}",
                     "Remaining SQM": "{:,.2f}",
                     "Completion %":  "{:.1f}%",
                 }),
                 use_container_width=True, hide_index=True,
-                height=min(700, 60 + len(filt_prog) * 35),
+                height=min(700, 60 + len(_prog_view) * 35),
                 key="prog_list_tbl"
             )
 
-            st.download_button(
-                "⬇ Download Progress List",
-                data=generate_excel_report(
-                    filt_prog.drop(columns=["Status"], errors="ignore").reset_index(drop=True),
-                    f"Progress List — {date.today()}", color_scheme="overview"),
-                file_name=f"progress_list_{date.today()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_prog_list"
-            )
+            # ── Production Details — date-wise per (Equipment × System Code) ──
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="sec-hdr">📊 Production Details — Date-wise per Equipment & System Code</div>',
+                        unsafe_allow_html=True)
+
+            _detail_blocks = []  # collect for the Excel export
+            if filt_prog.empty:
+                st.info("No rows in current filter.")
+            elif cons_df.empty:
+                st.info("No consumption entries recorded yet.")
+            else:
+                # Restrict to rows that have at least one consumption entry.
+                _pairs = filt_prog[["Equipment Tag", "System Code", "System Name",
+                                    "Equipment Name", "Location"]].drop_duplicates() \
+                    .reset_index(drop=True)
+                _idx = 0
+                for _, _row in _pairs.iterrows():
+                    _tag = _row["Equipment Tag"]
+                    _code = _row["System Code"]
+                    _sub = cons_df[
+                        (cons_df["Equipment Tag"] == _tag) &
+                        (cons_df["System Code"] == str(_code))
+                    ].copy()
+                    if _sub.empty:
+                        continue
+                    _idx += 1
+                    _sname = _row["System Name"]
+                    _ename = _row["Equipment Name"]
+                    _loc   = _row["Location"]
+                    st.markdown(
+                        f'<div style="margin-top:1rem;padding:.55rem .9rem;'
+                        f'background:var(--bg2);border:1px solid var(--border);'
+                        f'border-left:4px solid #F59E0B;border-radius:6px;">'
+                        f'<span style="font-family:\'JetBrains Mono\',monospace;'
+                        f'font-size:.8rem;font-weight:700;color:#F59E0B;">'
+                        f'{_idx}. {_tag} — {_ename}</span>'
+                        f'<span style="font-family:\'JetBrains Mono\',monospace;'
+                        f'font-size:.72rem;color:var(--t3);margin-left:.8rem;">'
+                        f'Code {_code} · {_sname} · {_loc}</span></div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # SQM Done per date (one row per work date).
+                    _sqm_by_date = (
+                        _sub.groupby("Date", as_index=False)["SQM Done"].first()
+                        .sort_values("Date").reset_index(drop=True)
+                    )
+                    # Material consumption per (Date × Material) — pivot for readability.
+                    _mat_by_date = (
+                        _sub.groupby(["Date", "Material Code", "Material Name", "UOM"],
+                                     as_index=False)["Consumed Qty"].sum()
+                        .sort_values(["Date", "Material Code"]).reset_index(drop=True)
+                    )
+                    _detail_df = _mat_by_date.merge(_sqm_by_date, on="Date", how="left")
+                    _detail_df = _detail_df[["Date", "SQM Done", "Material Code",
+                                             "Material Name", "UOM", "Consumed Qty"]]
+                    st.dataframe(
+                        _detail_df.style.format({
+                            "SQM Done":     "{:,.2f}",
+                            "Consumed Qty": "{:,.3f}",
+                        }),
+                        use_container_width=True, hide_index=True,
+                        height=min(360, 55 + len(_detail_df) * 33),
+                        key=f"prog_detail_{_tag}_{_code}",
+                    )
+                    _detail_blocks.append({
+                        "sheet": f"{_idx}. {str(_tag)[:8]}-{_code}"[:31],
+                        "title": f"{_idx}. {_tag} · Code {_code} ({_sname}) — {_ename} [{_loc}]",
+                        "df":    _detail_df,
+                    })
+                if _idx == 0:
+                    st.info("No consumption entries match the current filter.")
+
+            # ── Download — Progress List + Production Details ─────────────────
+            _dl_sheets = [{
+                "name":         "Progress List",
+                "df":           _prog_view,
+                "title":        f"Progress List — {date.today()}",
+                "color_scheme": "overview",
+            }]
+            for _b in _detail_blocks:
+                _dl_sheets.append({
+                    "name":         _b["sheet"],
+                    "df":           _b["df"],
+                    "title":        _b["title"],
+                    "color_scheme": "train_j",
+                })
+            _pl_c1, _pl_c2 = st.columns(2)
+            with _pl_c1:
+                st.download_button(
+                    "⬇ Excel — Progress List",
+                    data=generate_multi_sheet_excel(_dl_sheets),
+                    file_name=f"progress_list_{date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_prog_list",
+                    use_container_width=True,
+                )
+            with _pl_c2:
+                _pdf_download_button(
+                    "⬇ PDF — Progress List",
+                    sheets=_dl_sheets,
+                    title=f"Progress List — {date.today()}",
+                    file_stem=f"progress_list_{date.today()}",
+                    key="pdf_prog_list",
+                    use_container_width=True,
+                )
 
     session_tags = st.session_state.session_tags
 
@@ -4856,20 +5187,32 @@ with tab4:
 
             if not all_short_df.empty:
                 st.markdown("<br>", unsafe_allow_html=True)
-                st.download_button(
-                    f"⬇ Download Execution Order List — {sel_tag}",
-                    data=generate_excel_report(
-                        all_short_df[
-                            ["Lining_System_Code","Lining_System_Short_Name",
-                             "Material_Code","Material_Name","UOM",
-                             "Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_Pct"]
-                        ].sort_values(["Lining_System_Code","Shortfall_Qty"],
-                                      ascending=[True,False]),
-                        f"Execution Plan – {sel_tag}", color_scheme="execution"),
-                    file_name=f"execution_plan_{sel_tag.replace('/','-')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
+                _exec_df = all_short_df[
+                    ["Lining_System_Code","Lining_System_Short_Name",
+                     "Material_Code","Material_Name","UOM",
+                     "Demand_Qty","Allocated_Qty","Shortfall_Qty","Fulfillment_Pct"]
+                ].sort_values(["Lining_System_Code","Shortfall_Qty"],
+                              ascending=[True,False]).reset_index(drop=True)
+                _exec_c1, _exec_c2 = st.columns(2)
+                with _exec_c1:
+                    st.download_button(
+                        f"⬇ Excel — Execution Order List — {sel_tag}",
+                        data=generate_excel_report(
+                            _exec_df,
+                            f"Execution Plan – {sel_tag}", color_scheme="execution"),
+                        file_name=f"execution_plan_{sel_tag.replace('/','-')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                with _exec_c2:
+                    _pdf_download_button(
+                        f"⬇ PDF — Execution Order List — {sel_tag}",
+                        df=_exec_df,
+                        title=f"Execution Plan – {sel_tag}",
+                        file_stem=f"execution_plan_{sel_tag.replace('/','-')}",
+                        key=f"pdf_exec_{sel_tag}",
+                        use_container_width=True,
+                    )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: DAILY CONSUMPTION ENTRY
@@ -4921,165 +5264,222 @@ with tab_consume:
                 code_opts = sorted(
                     equip_sc[equip_sc["Equipment_Tag_No."]==ce_tag]["Lining_System_Code"].unique(),
                     key=lambda x: int(x))
-                code_labels = [
-                    f"Code {c}  –  {equip_sc[(equip_sc['Equipment_Tag_No.']==ce_tag)&(equip_sc['Lining_System_Code']==c)]['Lining_System_Short_Name'].iloc[0]}"
-                    for c in code_opts]
+                _code_name_map = {
+                    c: equip_sc[(equip_sc["Equipment_Tag_No."]==ce_tag) &
+                                (equip_sc["Lining_System_Code"]==c)]
+                       ["Lining_System_Short_Name"].iloc[0]
+                    for c in code_opts
+                }
+                code_labels = [f"Code {c}  –  {_code_name_map[c]}" for c in code_opts]
             else:
-                code_opts, code_labels = [], []
-            ce_code_raw = st.selectbox(" System Code", options=[""] + code_labels,
-                                       key="ce_code", label_visibility="visible")
-            ce_code = ce_code_raw.split("  –  ")[0].replace("Code ","").strip() if ce_code_raw else ""
+                code_opts, code_labels, _code_name_map = [], [], {}
 
-        # ── SQM Entry ─────────────────────────────────────────────────────────
-        if ce_tag and ce_code:
-            st.markdown("<hr>", unsafe_allow_html=True)
-            st.markdown('<div class="sec-hdr">Step 2 — Enter SQM Completed Today</div>',
-                        unsafe_allow_html=True)
-
-            sqm_row = sqm_ref[
-                (sqm_ref["Equipment_Tag_No."]==ce_tag) &
-                (sqm_ref["Lining_System_Code"]==ce_code)]
-            total_sqm_orig  = float(sqm_row["Total_SQM_Original"].iloc[0]) if not sqm_row.empty else 0
-            done_sqm_prev   = float(sqm_row["done_sqm"].iloc[0]) if not sqm_row.empty else 0
-            remaining_sqm   = max(0.0, total_sqm_orig - done_sqm_prev)
-            sname           = (equip_sc[(equip_sc["Equipment_Tag_No."]==ce_tag) &
-                                        (equip_sc["Lining_System_Code"]==ce_code)]
-                               ["Lining_System_Short_Name"].iloc[0]
-                               if not sqm_row.empty else ce_code)
-
-            sc1,sc2,sc3,sc4 = st.columns(4)
-            _consume_rec = recipe[recipe["Lining_System_Code"]==ce_code][["Material_Code","Material_Name","For_1_SQM","UOM"]].copy()
-            _consume_rec["Demand for Remaining SQM"] = (_consume_rec["For_1_SQM"] * remaining_sqm).round(4)
-            _consume_rec = _consume_rec.reset_index(drop=True)
-            with sc1:
-                dbl_click_metric("System Code", str(sname), f"tce_sc_{ce_tag}_{ce_code}",
-                    f"{sname} — Recipe Detail", _consume_rec)
-            with sc2:
-                dbl_click_metric("Original SQM", f"{total_sqm_orig:,.2f}", f"tce_orig_{ce_tag}_{ce_code}",
-                    f"{sname} — Recipe Detail", _consume_rec)
-            with sc3:
-                dbl_click_metric("Already Done SQM", f"{done_sqm_prev:,.2f}", f"tce_done_{ce_tag}_{ce_code}",
-                    f"{sname} — Completed so far ({done_sqm_prev:,.2f} SQM)", _consume_rec)
-            with sc4:
-                dbl_click_metric("Remaining SQM", f"{remaining_sqm:,.2f}", f"tce_rem_{ce_tag}_{ce_code}",
-                    f"{sname} — Material Needed for Remaining {remaining_sqm:,.2f} SQM", _consume_rec,
-                    help_text="Remaining = Original − already completed")
-
-            sc_recipe = recipe[recipe["Lining_System_Code"]==ce_code].copy()
-            sc_recipe = sc_recipe.merge(
-                inv[["Material_Code","Available_Qty","Ordered_Qty"]],
-                on="Material_Code", how="left")
-            sc_recipe["Available_Qty"] = sc_recipe["Available_Qty"].fillna(0)
-            sc_recipe["Ordered_Qty"]   = sc_recipe["Ordered_Qty"].fillna(0)
-
-            if sc_recipe.empty:
-                st.warning(f"No recipe found for System Code {ce_code}.")
+            _SELECT_ALL = "✨ Select All"
+            _multi_opts = ([_SELECT_ALL] + code_labels) if code_labels else []
+            ce_code_picks = st.multiselect(
+                " System Code", options=_multi_opts,
+                key="ce_code", label_visibility="visible",
+                help="Pick one or more system codes. Use ✨ Select All to pick every code for this equipment.",
+            )
+            if _SELECT_ALL in ce_code_picks:
+                ce_codes = code_opts[:]
             else:
+                ce_codes = [
+                    lbl.split("  –  ")[0].replace("Code ","").strip()
+                    for lbl in ce_code_picks
+                ]
+
+        # ── SQM Entry — render one block per selected code ────────────────────
+        if ce_tag and ce_codes:
+            ce_date_form = st.date_input(
+                "📅 Work Date", value=date.today(), key="form_ce_date"
+            )
+            ce_notes_form = st.text_area(
+                "📝 Notes (optional)",
+                placeholder="Weather conditions, issues, remarks…",
+                key="form_notes", height=70,
+            )
+
+            # Collect per-code inputs for the single "Add to Grid" submit below.
+            _code_blocks = []   # list of dicts: {code, sname, sqm_val, mat_inputs, blockers}
+
+            for _code in ce_codes:
+                sqm_row = sqm_ref[
+                    (sqm_ref["Equipment_Tag_No."]==ce_tag) &
+                    (sqm_ref["Lining_System_Code"]==_code)]
+                total_sqm_orig  = float(sqm_row["Total_SQM_Original"].iloc[0]) if not sqm_row.empty else 0
+                done_sqm_prev   = float(sqm_row["done_sqm"].iloc[0]) if not sqm_row.empty else 0
+                remaining_sqm   = max(0.0, total_sqm_orig - done_sqm_prev)
+                sname           = _code_name_map.get(_code, _code)
+
+                sc_recipe = recipe[recipe["Lining_System_Code"]==_code].copy()
+                sc_recipe = sc_recipe.merge(
+                    inv[["Material_Code","Available_Qty","Ordered_Qty"]],
+                    on="Material_Code", how="left")
+                sc_recipe["Available_Qty"] = sc_recipe["Available_Qty"].fillna(0)
+                sc_recipe["Ordered_Qty"]   = sc_recipe["Ordered_Qty"].fillna(0)
+
+                if sc_recipe.empty:
+                    st.warning(f"No recipe found for System Code {_code}.")
+                    continue
+
+                # Stock-based SQM coverage = min(Available / For_1_SQM) across recipe rows.
+                _per_mat_sqm = []
+                for _, _r in sc_recipe.iterrows():
+                    _f1 = float(_r.get("For_1_SQM", 0) or 0)
+                    _av = float(_r.get("Available_Qty", 0) or 0)
+                    if _f1 > 0:
+                        _per_mat_sqm.append(_av / _f1)
+                stock_cov_sqm = min(_per_mat_sqm) if _per_mat_sqm else 0.0
+                max_sqm_today = min(remaining_sqm, stock_cov_sqm)
+
                 st.markdown("<hr>", unsafe_allow_html=True)
-                with st.form(key="ce_form", clear_on_submit=False):
-                    st.markdown('<div class="sec-hdr">Step 2 — Enter SQM Completed Today</div>',
-                                unsafe_allow_html=True)
-                    col_date, col_sqm = st.columns(2)
-                    with col_date:
-                        ce_date_form = st.date_input("📅 Work Date", value=date.today(),
-                                                     key="form_ce_date")
-                    with col_sqm:
-                        ce_sqm_form = st.number_input(
-                            "SQM Completed Today",
-                            min_value=0.0, max_value=float(remaining_sqm),
-                            value=0.0, step=0.5, format="%.2f",
-                            key="form_ce_sqm",
-                            help=f"Maximum {remaining_sqm:,.2f} m² remaining")
+                st.markdown(
+                    f'<div class="sec-hdr">📦 Code {_code} — {sname}</div>',
+                    unsafe_allow_html=True,
+                )
 
-                    st.markdown('<div class="sec-hdr" style="margin-top:.8rem;">'
-                                'Step 3 — Material Quantities Consumed</div>',
-                                unsafe_allow_html=True)
-                    st.caption(
-                        "Actual Consumed defaults to For_1_SQM × SQM if left at 0. "
-                        "Override with actual site usage if different.")
+                sc1,sc2,sc3,sc4 = st.columns(4)
+                sc1.metric("Original SQM",       f"{total_sqm_orig:,.2f}")
+                sc2.metric("Already Done SQM",   f"{done_sqm_prev:,.2f}")
+                sc3.metric("Remaining SQM",      f"{remaining_sqm:,.2f}")
+                sc4.metric("Stock Coverage SQM", f"{stock_cov_sqm:,.2f}",
+                           help="Maximum SQM achievable with current stock = min(Available ÷ For_1_SQM) across materials in this recipe.")
 
-                    h1,h2,h3,h4,h5,h6,h7 = st.columns([2,3,1,1.5,1.5,1.5,1.5])
-                    for hdr, col in zip(
-                        ["Code","Material Name","UOM","Available",
-                         "For 1 SQM","Actual Consumed","On Order"],
-                        [h1,h2,h3,h4,h5,h6,h7]
-                    ):
-                        col.markdown(f"**{hdr}**")
-                    st.markdown("---")
+                _sqm_key = f"form_ce_sqm__{ce_tag}__{_code}"
+                ce_sqm_form = st.number_input(
+                    f"SQM Completed Today — Code {_code}",
+                    min_value=0.0,
+                    max_value=float(max_sqm_today) if max_sqm_today > 0 else 0.0,
+                    value=0.0, step=0.5, format="%.2f",
+                    key=_sqm_key,
+                    help=f"Capped at min(Remaining {remaining_sqm:,.2f}, Stock Coverage {stock_cov_sqm:,.2f}) m²",
+                )
 
-                    mat_inputs = {}
-                    for _, mrow in sc_recipe.iterrows():
-                        mc    = str(mrow["Material_Code"])
-                        for_1 = float(mrow.get("For_1_SQM", 0) or 0)
-                        avail = float(mrow.get("Available_Qty", 0) or 0)
-                        onord = float(mrow.get("Ordered_Qty",  0) or 0)
-                        c1,c2,c3,c4,c5,c6,c7 = st.columns([2,3,1,1.5,1.5,1.5,1.5])
-                        c1.markdown(f"<code>{mc}</code>", unsafe_allow_html=True)
-                        c2.write(str(mrow.get("Material_Name", "")))
-                        c3.write(str(mrow.get("UOM", "")))
-                        c4.write(f"{avail:,.3f}")
-                        c5.write(f"{for_1:,.3f}")
-                        actual = c6.number_input(
-                            "qty", min_value=0.0, value=0.0,
-                            step=0.001, format="%.3f",
-                            key=f"form_mat_{mc}",
-                            label_visibility="collapsed")
-                        c7.write(f"{onord:,.3f}")
-                        mat_inputs[mc] = {
-                            "material_name": str(mrow.get("Material_Name", "")),
-                            "uom":           str(mrow.get("UOM", "")),
-                            "for_1_sqm":     for_1,
-                            "actual_input":  float(actual),
-                        }
+                _sqm_today = float(st.session_state.get(_sqm_key, 0.0))
+                if _sqm_today > stock_cov_sqm + 0.001:
+                    st.error(
+                        f"❌ SQM entered ({_sqm_today:.2f} m²) exceeds stock coverage "
+                        f"({stock_cov_sqm:.2f} m²) for Code {_code}. Cannot proceed."
+                    )
 
-                    ce_notes_form = st.text_area(
-                        "📝 Notes (optional)",
-                        placeholder="Weather conditions, issues, remarks…",
-                        key="form_notes", height=70)
+                st.caption(
+                    "Required Qty = For_1_SQM × SQM Completed Today (auto). "
+                    "Override Actual Consumed only if site usage differs. "
+                    "Actual Consumed is capped at material Available Qty."
+                )
 
-                    # ── Live variance preview (outside form, inside else block) ──
-                    _sqm_preview = st.session_state.get("form_ce_sqm", 0.0)
-                    if _sqm_preview > 0:
-                        for _, _mrow in sc_recipe.iterrows():
-                            _mc_p   = str(_mrow["Material_Code"])
-                            _for1_p = float(_mrow.get("For_1_SQM", 0) or 0)
-                            _exp_p  = round(_for1_p * _sqm_preview, 4)
-                            _act_p  = float(st.session_state.get(f"form_mat_{_mc_p}", 0.0))
-                            _eff_p  = _act_p if _act_p > 0 else _exp_p
-                            if _exp_p > 0:
-                                _var_p = (_eff_p - _exp_p) / _exp_p * 100
-                                if _var_p > 1.0:
-                                    st.warning(f"⚠️ {_mc_p}: Entered {_eff_p:.3f} vs expected {_exp_p:.3f} — **Over Consumption** (+{_var_p:.1f}%)")
-                                elif _var_p < -1.0:
-                                    st.info(f"ℹ️ {_mc_p}: Entered {_eff_p:.3f} vs expected {_exp_p:.3f} — **Less Consumption** ({_var_p:.1f}%)")
+                h1,h2,h3,h4,h5,h6 = st.columns([2,3,1,1.5,1.7,1.5])
+                for hdr, col in zip(
+                    ["Code","Material Name","UOM","Available",
+                     "Required Qty","Actual Consumed"],
+                    [h1,h2,h3,h4,h5,h6],
+                ):
+                    col.markdown(f"**{hdr}**")
+                st.markdown("---")
 
-                    add_to_grid_btn = st.form_submit_button(
-                        "➕ Add to Grid",
-                        use_container_width=False)
+                mat_inputs = {}
+                _row_blockers = []
+                for _, mrow in sc_recipe.iterrows():
+                    mc    = str(mrow["Material_Code"])
+                    for_1 = float(mrow.get("For_1_SQM", 0) or 0)
+                    avail = float(mrow.get("Available_Qty", 0) or 0)
+                    required_qty = round(for_1 * _sqm_today, 4)
 
-                # Clear Form button (outside form)
-                if st.button("🧹 Clear Form", key="ce_clr_btn"):
+                    c1,c2,c3,c4,c5,c6 = st.columns([2,3,1,1.5,1.7,1.5])
+                    c1.markdown(f"<code>{mc}</code>", unsafe_allow_html=True)
+                    c2.write(str(mrow.get("Material_Name", "")))
+                    c3.write(str(mrow.get("UOM", "")))
+                    c4.write(f"{avail:,.3f}")
+                    c5.write(f"{required_qty:,.3f}")
+                    _act_key = f"form_mat__{ce_tag}__{_code}__{mc}"
+                    actual = c6.number_input(
+                        "qty",
+                        min_value=0.0,
+                        max_value=float(avail) if avail > 0 else 0.0,
+                        value=0.0, step=0.001, format="%.3f",
+                        key=_act_key, label_visibility="collapsed",
+                    )
+                    if actual > avail + 1e-9:
+                        st.error(
+                            f"❌ {mc}: Actual Consumed ({actual:.3f}) exceeds Available Qty "
+                            f"({avail:.3f}) — only {avail:.3f} {mrow.get('UOM','')} in stock."
+                        )
+                        _row_blockers.append(mc)
+
+                    mat_inputs[mc] = {
+                        "material_name": str(mrow.get("Material_Name", "")),
+                        "uom":           str(mrow.get("UOM", "")),
+                        "for_1_sqm":     for_1,
+                        "available":     avail,
+                        "required_qty":  required_qty,
+                        "actual_input":  float(actual),
+                    }
+
+                # Live variance preview per row.
+                if _sqm_today > 0:
+                    for _mc, _vals in mat_inputs.items():
+                        _exp = _vals["required_qty"]
+                        _act = _vals["actual_input"]
+                        _eff = _act if _act > 0 else _exp
+                        if _exp > 0:
+                            _var = (_eff - _exp) / _exp * 100
+                            if _var > 1.0:
+                                st.warning(f"⚠️ {_mc}: Entered {_eff:.3f} vs required {_exp:.3f} — **Over Consumption** (+{_var:.1f}%)")
+                            elif _var < -1.0:
+                                st.info(f"ℹ️ {_mc}: Entered {_eff:.3f} vs required {_exp:.3f} — **Less Consumption** ({_var:.1f}%)")
+
+                _code_blockers = []
+                if _sqm_today > stock_cov_sqm + 0.001:
+                    _code_blockers.append("sqm_over_stock")
+                if _row_blockers:
+                    _code_blockers.append("actual_over_stock")
+
+                _code_blocks.append({
+                    "code": _code, "sname": sname,
+                    "sqm_val": _sqm_today,
+                    "remaining_sqm": remaining_sqm,
+                    "stock_cov_sqm": stock_cov_sqm,
+                    "mat_inputs": mat_inputs,
+                    "blockers": _code_blockers,
+                })
+
+            st.markdown("<hr>", unsafe_allow_html=True)
+            _btn_cols = st.columns([1, 1, 6])
+            with _btn_cols[0]:
+                add_to_grid_btn = st.button(
+                    "➕ Add to Grid", key="ce_add_btn", type="primary",
+                    use_container_width=True,
+                )
+            with _btn_cols[1]:
+                if st.button("🧹 Clear Form", key="ce_clr_btn", use_container_width=True):
                     for _k in list(st.session_state.keys()):
-                        if _k.startswith(("form_ce_", "form_mat_", "form_notes")):
+                        if _k.startswith(("form_ce_", "form_mat__", "form_notes")):
                             del st.session_state[_k]
                     st.rerun()
 
-                # ── Add to Draft Grid ─────────────────────────────────────────
-                if add_to_grid_btn:
-                    sqm_val   = st.session_state.get("form_ce_sqm",  0.0)
-                    date_val  = st.session_state.get("form_ce_date", date.today())
-                    notes_val = st.session_state.get("form_notes",   "")
-                    if sqm_val <= 0:
-                        st.error("❌ Enter SQM Completed > 0 before adding to grid.")
-                    elif sqm_val > remaining_sqm + 0.001:
-                        st.error(f"❌ SQM entered ({sqm_val:.2f} m²) exceeds remaining ({remaining_sqm:.2f} m²). Entry blocked.")
-                    else:
-                        try:
-                            conn = get_db(); cur = conn.cursor()
-                            _sk = st.session_state["_session_key"]
-                            for mc, vals in mat_inputs.items():
-                                expected_qty = round(vals["for_1_sqm"] * sqm_val, 4)
-                                actual_qty   = float(vals["actual_input"])
+            # ── Add to Draft Grid ─────────────────────────────────────────────
+            if add_to_grid_btn:
+                date_val  = st.session_state.get("form_ce_date", date.today())
+                notes_val = st.session_state.get("form_notes",   "")
+                _any_block = any(b["blockers"] for b in _code_blocks)
+                _any_data  = any(b["sqm_val"] > 0 for b in _code_blocks)
+                if _any_block:
+                    st.error("❌ Fix the highlighted stock/coverage errors above before adding to grid.")
+                elif not _any_data:
+                    st.error("❌ Enter SQM Completed > 0 for at least one System Code before adding to grid.")
+                else:
+                    try:
+                        conn = get_db(); cur = conn.cursor()
+                        _sk = st.session_state["_session_key"]
+                        _inserted = 0
+                        for _blk in _code_blocks:
+                            sqm_val = _blk["sqm_val"]
+                            if sqm_val <= 0:
+                                continue
+                            for mc, vals in _blk["mat_inputs"].items():
+                                expected_qty  = round(vals["for_1_sqm"] * sqm_val, 4)
+                                actual_qty    = float(vals["actual_input"])
                                 effective_qty = actual_qty if actual_qty > 0 else expected_qty
                                 if expected_qty > 0:
                                     var_pct = round((effective_qty - expected_qty) / expected_qty * 100, 2)
@@ -5098,16 +5498,20 @@ with tab_consume:
                                        material_name, uom, expected_qty, actual_qty,
                                        effective_qty, variance_pct, variance_status, notes)
                                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                                """, (_sk, str(date_val), ce_tag, ce_code, sname,
+                                """, (_sk, str(date_val), ce_tag, _blk["code"], _blk["sname"],
                                       sqm_val, mc, vals["material_name"], vals["uom"],
                                       expected_qty, actual_qty, effective_qty,
                                       var_pct, var_status, notes_val))
-                            conn.commit(); conn.close()
-                            st.success(f"✅ {len(mat_inputs)} material(s) added to draft grid for {ce_tag} · Code {ce_code}.")
-                            st.cache_data.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Database error: {e}")
+                                _inserted += 1
+                        conn.commit(); conn.close()
+                        st.success(
+                            f"✅ {_inserted} material row(s) added to draft grid across "
+                            f"{sum(1 for b in _code_blocks if b['sqm_val'] > 0)} system code(s) for {ce_tag}."
+                        )
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Database error: {e}")
 
         # ── Draft Consumption Grid ────────────────────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)
@@ -5250,13 +5654,25 @@ with tab_consume:
                         })
                     _excel_bytes = generate_multi_sheet_excel(_sub_sheets)
                     st.success(f"✅ {len(_draft_df)} entries submitted to consumption log.")
-                    st.download_button(
-                        "⬇ Download Consumption Report",
-                        data=_excel_bytes,
-                        file_name=f"consumption_report_{date.today()}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_cons_report",
-                    )
+                    _cr_c1, _cr_c2 = st.columns(2)
+                    with _cr_c1:
+                        st.download_button(
+                            "⬇ Excel — Consumption Report",
+                            data=_excel_bytes,
+                            file_name=f"consumption_report_{date.today()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_cons_report",
+                            use_container_width=True,
+                        )
+                    with _cr_c2:
+                        _pdf_download_button(
+                            "⬇ PDF — Consumption Report",
+                            sheets=_sub_sheets,
+                            title=f"Consumption Report — {date.today()}",
+                            file_stem=f"consumption_report_{date.today()}",
+                            key="pdf_cons_report",
+                            use_container_width=True,
+                        )
                     st.rerun()
                 except Exception as _e:
                     st.error(f"❌ Database error during submission: {_e}")
@@ -6068,11 +6484,19 @@ with tab5:
         f_loc_ov = st.multiselect(" Location",
             options=LOCATION_ORDER, default=LOCATION_ORDER, key="ov_loc")
     with ff2:
-        type_opts_ov = sorted(display_master["Type"].dropna().unique().tolist())
+        # Type options scoped to selected locations
+        _ov_type_pool = display_master[display_master["Location"].isin(f_loc_ov)] \
+                        if f_loc_ov else display_master
+        type_opts_ov = sorted(_ov_type_pool["Type"].dropna().unique().tolist())
         f_type_ov = st.multiselect(" Type",
             options=type_opts_ov, default=type_opts_ov, key="ov_type")
     with ff3:
-        codes_ov = sorted(display_master["System Code"].unique().tolist(), key=int)
+        # System Code options scoped to selected locations + types
+        _ov_code_pool = display_master[
+            display_master["Location"].isin(f_loc_ov) &
+            display_master["Type"].isin(f_type_ov)
+        ] if (f_loc_ov or f_type_ov) else display_master
+        codes_ov = sorted(_ov_code_pool["System Code"].unique().tolist(), key=int)
         f_code_ov = st.multiselect(" System Code",
             options=codes_ov, default=codes_ov, key="ov_code")
     with ff4:
@@ -6260,14 +6684,23 @@ with tab5:
 
     # ── Downloads ─────────────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
-    dl1, dl2 = st.columns(2)
+    dl1, dl1b, dl2 = st.columns(3)
     with dl1:
         st.download_button(
-            "⬇ Download Filtered Master Table",
+            "⬇ Excel — Master Table",
             data=generate_excel_report(filtered_master, f"Total Overview — {date.today()}", color_scheme="overview"),
             file_name=f"total_overview_{date.today()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True)
+    with dl1b:
+        _pdf_download_button(
+            "⬇ PDF — Master Table",
+            df=filtered_master,
+            title=f"Total Overview — {date.today()}",
+            file_stem=f"total_overview_{date.today()}",
+            key="pdf_total_ov",
+            use_container_width=True,
+        )
     with dl2:
         if db_available():
             conn = get_db()
