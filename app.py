@@ -88,18 +88,25 @@ def _rename_to_standard(file_name: str | None, fallback_stem: str | None = None)
     return _standard_filename(stem, ext)
 
 
-def _encrypt_xlsx_bytes(raw: bytes, password: str) -> bytes | None:
+def _encrypt_xlsx_bytes(raw: bytes, password: str,
+                         inner_name: str = "report.xlsx") -> bytes | None:
     """Return AES-encrypted ZIP bytes containing the raw .xlsx, or None when
     the encryption lib isn't available. ZIP wrapping is used because neither
-    xlsxwriter nor openpyxl support write-side .xlsx password encryption."""
+    xlsxwriter nor openpyxl support write-side .xlsx password encryption.
+
+    `inner_name` controls the filename stored inside the zip — when the user
+    extracts the archive they get the .xlsx with this name (not the generic
+    "report.xlsx")."""
     if not _HAS_PYZIPPER or not password:
         return None
+    if not inner_name.lower().endswith((".xlsx", ".xlsm")):
+        inner_name = inner_name.rsplit(".", 1)[0] + ".xlsx"
     buf = io.BytesIO()
     with pyzipper.AESZipFile(buf, "w",
                               compression=pyzipper.ZIP_DEFLATED,
                               encryption=pyzipper.WZ_AES) as zf:
         zf.setpassword(password.encode("utf-8"))
-        zf.writestr("report.xlsx", raw)
+        zf.writestr(inner_name, raw)
     return buf.getvalue()
 
 
@@ -249,12 +256,17 @@ def _secure_download_button(label, data=None, file_name=None, mime=None,
 
     # ── Excel: encrypt bytes, then gate the download behind a password popover.
     # The popover label looks like a normal button; on click it opens a small
-    # panel with a password input. The actual download button only appears
-    # when the typed password matches _XLSX_PASSWORD. (Fix F#5)
-    encrypted = _encrypt_xlsx_bytes(bytes(data), _xlsx_password())
+    # panel with a password input. After the typed password matches
+    # _XLSX_PASSWORD the file auto-downloads. (Fix F#5)
+    # The inner archive name matches the project filename convention so that
+    # extracting the zip yields a properly-named .xlsx (not "report.xlsx").
+    _stem = file_name.rsplit(".", 1)[0]
+    _inner_xlsx_name = _standard_filename(_stem, "xlsx")
+    encrypted = _encrypt_xlsx_bytes(bytes(data), _xlsx_password(),
+                                    inner_name=_inner_xlsx_name)
     if encrypted is not None:
         enc_data = encrypted
-        enc_name = _standard_filename(file_name.rsplit(".", 1)[0], "protected.zip")
+        enc_name = _standard_filename(_stem, "protected.zip")
         enc_mime = "application/zip"
     else:
         enc_data = data
