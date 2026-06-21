@@ -65,12 +65,12 @@ def _safe_for_filename(text: str) -> str:
 
 def _standard_filename(stem: str, ext: str) -> str:
     """Apply the project filename convention:
-        <ReportName>_<username>_<YYYY-MM-DD>_<HH-MM>.<ext>
+        <ReportName>_<username>_<YYYY-MM-DD>.<ext>
     `stem` is the report-name portion. `ext` is without the leading dot.
     """
     base = _safe_for_filename(stem) or "report"
     user = _safe_for_filename(_current_username())
-    ts   = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    ts   = date.today().strftime("%Y-%m-%d")
     return f"{base}_{user}_{ts}.{ext.lstrip('.')}"
 
 
@@ -181,6 +181,43 @@ def _pdf_from_df(df: pd.DataFrame, title: str, password: str) -> bytes:
     return _pdf_from_sheets([{"name": title[:31], "df": df, "title": title}], password)
 
 
+# ── AUTO-DOWNLOAD HELPER ─────────────────────────────────────────────────────
+# After password verification, fire the file to the browser without requiring
+# the user to click a second download button. Streamlit cannot programmatically
+# invoke `st.download_button`, so we inject a hidden <a download> into the
+# parent document and click() it from a tiny components.html iframe. The
+# user-gesture context (typing the password) carries through, so modern
+# browsers allow the download.
+def _trigger_browser_download(file_bytes: bytes, file_name: str, mime: str) -> None:
+    try:
+        import streamlit.components.v1 as _comp
+    except Exception:
+        return
+    b64 = base64.b64encode(bytes(file_bytes)).decode()
+    safe_name = str(file_name).replace("'", "").replace('"', "").replace("\\", "")
+    safe_mime = str(mime or "application/octet-stream")
+    html = f"""
+<script>
+(function() {{
+    try {{
+        var doc = (window.parent && window.parent.document)
+            ? window.parent.document : document;
+        var a = doc.createElement('a');
+        a.href = 'data:{safe_mime};base64,{b64}';
+        a.download = '{safe_name}';
+        a.style.display = 'none';
+        doc.body.appendChild(a);
+        a.click();
+        setTimeout(function() {{
+            try {{ doc.body.removeChild(a); }} catch(_e){{}}
+        }}, 1500);
+    }} catch(e) {{ console.error('auto-download failed:', e); }}
+}})();
+</script>
+"""
+    _comp.html(html, height=0, width=0)
+
+
 # Monkey-patch st.download_button so every .xlsx download is wrapped in a
 # password-protected AES-ZIP using the session download password. This adds
 # call-site-free encryption for the 20+ existing Excel download buttons.
@@ -190,31 +227,78 @@ def _secure_download_button(label, data=None, file_name=None, mime=None,
                             kwargs=None, *, type="secondary",
                             disabled=False, use_container_width=False,
                             icon=None):
-    enc_data = data
-    out_name = file_name
-    if isinstance(data, (bytes, bytearray)) and file_name and \
-       (file_name.endswith(".xlsx") or file_name.endswith(".xlsm")):
-        encrypted = _encrypt_xlsx_bytes(bytes(data), _xlsx_password())
-        if encrypted is not None:
-            enc_data = encrypted
-            # Standardize the protected-zip filename per project convention.
-            base_stem = file_name.rsplit(".", 1)[0]
-            out_name  = _standard_filename(base_stem, "protected.zip")
-            mime = "application/zip"
-        else:
-            out_name = _rename_to_standard(file_name)
-    elif file_name:
-        # Apply naming convention to any other downloadable file too (PDFs go
-        # through _pdf_download_button which already renames; this covers misc.).
-        out_name = _rename_to_standard(file_name)
-    call_kwargs = dict(
-        label=label, data=enc_data, file_name=out_name, mime=mime,
-        key=key, help=help, on_click=on_click, args=args, kwargs=kwargs,
-        type=type, disabled=disabled, use_container_width=use_container_width,
+    is_xlsx = (
+        isinstance(data, (bytes, bytearray))
+        and file_name
+        and (file_name.endswith(".xlsx") or file_name.endswith(".xlsm"))
     )
-    if icon is not None:
-        call_kwargs["icon"] = icon
-    return _orig_download_button(**call_kwargs)
+
+    # ── Non-Excel files: rename to standard and pass through ──
+    if not is_xlsx:
+        if file_name:
+            file_name = _rename_to_standard(file_name)
+        call_kwargs = dict(
+            label=label, data=data, file_name=file_name, mime=mime,
+            key=key, help=help, on_click=on_click, args=args, kwargs=kwargs,
+            type=type, disabled=disabled,
+            use_container_width=use_container_width,
+        )
+        if icon is not None:
+            call_kwargs["icon"] = icon
+        return _orig_download_button(**call_kwargs)
+
+    # ── Excel: encrypt bytes, then gate the download behind a password popover.
+    # The popover label looks like a normal button; on click it opens a small
+    # panel with a password input. The actual download button only appears
+    # when the typed password matches _XLSX_PASSWORD. (Fix F#5)
+    encrypted = _encrypt_xlsx_bytes(bytes(data), _xlsx_password())
+    if encrypted is not None:
+        enc_data = encrypted
+        enc_name = _standard_filename(file_name.rsplit(".", 1)[0], "protected.zip")
+        enc_mime = "application/zip"
+    else:
+        enc_data = data
+        enc_name = _rename_to_standard(file_name)
+        enc_mime = mime
+
+    safe_key = key or _safe_for_filename(file_name)
+    pwd_state_key = f"_xlsx_pwd__{safe_key}"
+
+    try:
+        _popover = st.popover(label, use_container_width=use_container_width,
+                              disabled=disabled)
+    except TypeError:
+        # Older Streamlit signatures may not accept `disabled`.
+        _popover = st.popover(label, use_container_width=use_container_width)
+
+    with _popover:
+        st.markdown(
+            "<div style=\"font-family:'JetBrains Mono',monospace;font-size:.72rem;"
+            "color:var(--t3);margin-bottom:.4rem;letter-spacing:.05em;\">"
+            "🔐 Excel download is password-protected.</div>",
+            unsafe_allow_html=True,
+        )
+        pwd_in = st.text_input(
+            "Excel Password",
+            type="password",
+            key=pwd_state_key,
+            placeholder="Enter password — download starts automatically",
+            label_visibility="collapsed",
+        )
+        fired_key = f"_xlsx_dl_fired__{safe_key}"
+        if pwd_in:
+            if pwd_in == _XLSX_PASSWORD:
+                if not st.session_state.get(fired_key):
+                    st.session_state[fired_key] = True
+                    _trigger_browser_download(enc_data, enc_name, enc_mime)
+                    st.success(f"⬇ Downloading **{enc_name}**…")
+                else:
+                    st.success(f"✓ Download started for **{enc_name}**.")
+                    if st.button("↻ Download again", key=f"_xlsx_redl__{safe_key}"):
+                        st.session_state.pop(fired_key, None)
+                        st.rerun()
+            else:
+                st.error("❌ Incorrect password.")
 st.download_button = _secure_download_button
 
 
@@ -223,8 +307,8 @@ def _pdf_download_button(label: str, *, df: pd.DataFrame | None = None,
                           file_stem: str, key: str,
                           use_container_width: bool = False,
                           disabled: bool = False) -> None:
-    """Render a PDF download button alongside an Excel one. Either pass `df`
-    for a single-sheet PDF, or `sheets` for a multi-page PDF."""
+    """Password-gated PDF download. Opens a popover; once the entered password
+    matches _PDF_PASSWORD the file is auto-downloaded (no second click)."""
     if not _HAS_REPORTLAB:
         st.caption("📄 PDF unavailable — install reportlab to enable.")
         return
@@ -232,20 +316,52 @@ def _pdf_download_button(label: str, *, df: pd.DataFrame | None = None,
         sheets = [{"name": title[:31], "df": df, "title": title}]
     if not sheets:
         return
+
+    safe_key = key or _safe_for_filename(file_stem)
+    pwd_state_key = f"_pdf_pwd__{safe_key}"
+    fired_key     = f"_pdf_dl_fired__{safe_key}"
+
     try:
-        pdf_bytes = _pdf_from_sheets(sheets, _pdf_password())
-    except Exception as _e:
-        st.caption(f"📄 PDF generation failed: {_e}")
-        return
-    _orig_download_button(
-        label=label,
-        data=pdf_bytes,
-        file_name=_standard_filename(file_stem, "pdf"),
-        mime="application/pdf",
-        key=key,
-        use_container_width=use_container_width,
-        disabled=disabled,
-    )
+        _popover = st.popover(label, use_container_width=use_container_width,
+                              disabled=disabled)
+    except TypeError:
+        _popover = st.popover(label, use_container_width=use_container_width)
+
+    with _popover:
+        st.markdown(
+            "<div style=\"font-family:'JetBrains Mono',monospace;font-size:.72rem;"
+            "color:var(--t3);margin-bottom:.4rem;letter-spacing:.05em;\">"
+            "🔐 PDF download is password-protected.</div>",
+            unsafe_allow_html=True,
+        )
+        pwd_in = st.text_input(
+            "PDF Password",
+            type="password",
+            key=pwd_state_key,
+            placeholder="Enter password — download starts automatically",
+            label_visibility="collapsed",
+        )
+        if not pwd_in:
+            return
+        if pwd_in != _PDF_PASSWORD:
+            st.error("❌ Incorrect password.")
+            return
+
+        out_name = _standard_filename(file_stem, "pdf")
+        if not st.session_state.get(fired_key):
+            try:
+                pdf_bytes = _pdf_from_sheets(sheets, _pdf_password())
+            except Exception as _e:
+                st.error(f"📄 PDF generation failed: {_e}")
+                return
+            st.session_state[fired_key] = True
+            _trigger_browser_download(pdf_bytes, out_name, "application/pdf")
+            st.success(f"⬇ Downloading **{out_name}**…")
+        else:
+            st.success(f"✓ Download started for **{out_name}**.")
+            if st.button("↻ Download again", key=f"_pdf_redl__{safe_key}"):
+                st.session_state.pop(fired_key, None)
+                st.rerun()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Smart Material Estimator & Planner",
@@ -258,6 +374,8 @@ PATH_B   = os.path.join(BASE_DIR, "For_1_SQM.xlsx")
 PATH_C   = os.path.join(BASE_DIR, "Equipment.xlsx")
 SHEET_A, SHEET_B, SHEET_C = "Materials", "LINING SYSTEM MATERIAL CONSM", "Data Input"
 LOCATION_ORDER = ["Brown Field", "TRAIN J", "TRAIN K"]
+TYPE_ORDER     = []  # Loaded from `types` table at startup. Falls back to
+                     # distinct equipment.type values when the table is empty.
 DB_PATH = os.path.join(BASE_DIR, "sme_database.db")
 LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
 
@@ -487,26 +605,46 @@ section.main > div.block-container { padding-top: 78px !important; }
   background:linear-gradient(90deg,var(--amber3) 0%,var(--amber) 40%,var(--amber2) 70%,transparent 100%);
 }
 
-/* ── TABS (stick just under the fixed header) ── */
-[data-testid="stTabs"] > div:first-of-type {
-  position: sticky !important; top: 78px !important; z-index: 999985 !important;
+/* ── OVERFLOW UNLOCK: only on intermediate containers that wrap sticky
+   elements. Do NOT touch [data-testid="stAppViewContainer"] or section.main —
+   those are the document's scroll root; setting them to overflow:visible
+   freezes the page (no scroll possible). ── */
+[data-testid="stAppViewBlockContainer"],
+[data-testid="stMainBlockContainer"],
+[data-testid="stTabs"],
+[data-testid="stTabs"] > div,
+[data-baseweb="tab-panel"],
+[role="tabpanel"],
+[data-testid="stTabsPanel"] {
+  overflow: visible !important;
+}
+
+/* ── TABS (stick just under the fixed header) — multiple selectors so
+       Streamlit version drift doesn't break the pin. ── */
+[data-testid="stTabs"] > div:first-of-type,
+[data-testid="stTabs"] > div[data-baseweb="tab-list"],
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+  position: sticky !important; top: 76px !important; z-index: 999990 !important;
   background: var(--bg0) !important;
   padding: .35rem .3rem;
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
 }
 
 /* ── STICKY SUB-VIEW RADIO (the first horizontal stRadio inside each tab) ── */
 /* Uses :has() so only tabs whose first element is a radio get the sticky band.
-   Sits just below the tab strip (78px header + ~46px tabs). */
+   Sits just below the title (76px) + tabs strip (~45px) = ~122px. */
 [data-baseweb="tab-panel"] [data-testid="stVerticalBlock"]
   > [data-testid="stElementContainer"]:first-of-type:has([data-testid="stRadio"]),
 [data-baseweb="tab-panel"] [data-testid="stVerticalBlock"]
-  > [data-testid="element-container"]:first-of-type:has([data-testid="stRadio"]) {
+  > [data-testid="element-container"]:first-of-type:has([data-testid="stRadio"]),
+[role="tabpanel"] [data-testid="stVerticalBlock"]
+  > [data-testid="stElementContainer"]:first-of-type:has([data-testid="stRadio"]) {
   position: sticky !important;
-  top: 124px !important;
-  z-index: 999980 !important;
+  top: 122px !important;
+  z-index: 999970 !important;
   background: var(--bg0) !important;
-  padding: .4rem .25rem !important;
+  padding: .45rem .25rem !important;
   border-bottom: 1px solid var(--border) !important;
   margin-bottom: .25rem !important;
   box-shadow: 0 2px 12px rgba(0,0,0,0.04);
@@ -538,18 +676,40 @@ section.main > div.block-container { padding-top: 78px !important; }
 .stButton>button:hover { background:linear-gradient(135deg,var(--amber) 0%,var(--amber2) 100%)!important; transform:translateY(-2px)!important; box-shadow:0 6px 20px var(--amber-glow)!important; }
 .stButton>button:active { transform:translateY(0)!important; }
 
-/* ── NATIVE METRICS (no float/hover animation — click-only drilldowns) ── */
+/* ── NATIVE METRICS (no float/hover animation anywhere) ── */
 [data-testid="stMetric"] {
   background:var(--bg2); border:1px solid var(--border);
   border-radius:var(--r-md); padding:.9rem 1rem!important;
-  cursor:default; transition:none!important;
+  cursor:default;
   position:relative; overflow:hidden;
+}
+[data-testid="stMetric"],
+[data-testid="stMetric"] *,
+[data-testid="stMetric"]:hover,
+[data-testid="stMetric"]:hover *,
+[data-testid="stMetric"]:focus,
+[data-testid="stMetric"]:active,
+[data-testid="stMetric"]:focus-within {
+  transition: none !important;
+  -webkit-transition: none !important;
+  animation: none !important;
+  -webkit-animation: none !important;
+  transform: none !important;
+  -webkit-transform: none !important;
+  will-change: auto !important;
+}
+[data-testid="stMetric"]:hover,
+[data-testid="stMetric"]:focus,
+[data-testid="stMetric"]:active,
+[data-testid="stMetric"]:focus-within {
+  box-shadow: none !important;
+  border-color: var(--border) !important;
+  background: var(--bg2) !important;
 }
 [data-testid="stMetric"]::before {
   content:''; position:absolute; top:0; left:0;
   width:3px; height:100%; background:var(--amber); border-radius:99px 0 0 99px;
 }
-[data-testid="stMetric"]:hover { transform:none!important; box-shadow:none!important; border-color:var(--border)!important; }
 [data-testid="stMetricLabel"] { font-family:'JetBrains Mono',monospace!important; font-size:.58rem!important; letter-spacing:.13em; text-transform:uppercase; color:var(--t4)!important; padding-left:.5rem; }
 [data-testid="stMetricValue"] { font-family:'JetBrains Mono',monospace!important; font-size:1.9rem!important; font-weight:700!important; color:var(--t0)!important; padding-left:.5rem; }
 [data-testid="stMetricDelta"] { font-size:.72rem!important; }
@@ -681,9 +841,26 @@ hr { border:none!important; height:1px!important; background:linear-gradient(90d
   border-radius:var(--r-md)!important; padding:.9rem 1rem!important;
   height:auto!important; min-height:80px!important;
   text-align:left!important; white-space:pre-wrap!important;
-  transition:none!important; color:var(--t0)!important;
+  color:var(--t0)!important;
   position:relative!important; overflow:hidden!important;
   cursor:pointer!important;
+}
+[data-testid="stPopover"],
+[data-testid="stPopover"] *,
+[data-testid="stPopover"] button,
+[data-testid="stPopover"] button *,
+[data-testid="stPopover"] button:hover,
+[data-testid="stPopover"] button:hover *,
+[data-testid="stPopover"] button:focus,
+[data-testid="stPopover"] button:active,
+[data-testid="stPopover"] button:focus-within {
+  transition: none !important;
+  -webkit-transition: none !important;
+  animation: none !important;
+  -webkit-animation: none !important;
+  transform: none !important;
+  -webkit-transform: none !important;
+  will-change: auto !important;
 }
 [data-testid="stPopover"] button::before {
   content:''; position:absolute; top:0; left:0;
@@ -692,19 +869,33 @@ hr { border:none!important; height:1px!important; background:linear-gradient(90d
 [data-testid="stPopover"] button:hover {
   background:var(--bg2)!important; border-color:var(--border)!important;
   box-shadow:none!important;
-  transform:none!important;
 }
 [data-testid="stPopover"] button:focus,
 [data-testid="stPopover"] button:active {
   border-color:var(--amber)!important;
   box-shadow:0 0 0 1px var(--amber)!important;
-  transform:none!important;
 }
 [data-testid="stPopover"] button p { font-family:'JetBrains Mono',monospace!important; font-size:.88rem!important; color:var(--t0)!important; line-height:1.5!important; }
 
 /* ════════════════════════════════════════════════════════════════════════
    ALIGNMENT SWEEP (Fix #8) — consistent padding, table widths, form rows
    ════════════════════════════════════════════════════════════════════════ */
+
+/* Belt-and-braces: kill animations on the first AND last KPI in a row too. */
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:first-child [data-testid="stMetric"],
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:last-child [data-testid="stMetric"],
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:first-child [data-testid="stPopover"] button,
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:last-child [data-testid="stPopover"] button {
+  transition: none !important;
+  animation: none !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:first-child [data-testid="stMetric"]:hover,
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:last-child [data-testid="stMetric"]:hover {
+  border-color: var(--border) !important;
+  background: var(--bg2) !important;
+}
 
 /* Equalise KPI column heights so adjacent cards line up. */
 [data-testid="stHorizontalBlock"] > [data-testid="column"] {
@@ -726,11 +917,45 @@ hr { border:none!important; height:1px!important; background:linear-gradient(90d
 /* Forms: tighten input row spacing so columns line up at the same baseline. */
 [data-testid="stForm"] [data-testid="stVerticalBlock"] { gap: .55rem !important; }
 [data-testid="stForm"] label { margin-bottom: .15rem !important; }
+
+/* ── UNIFORM DROPDOWN / INPUT DIMENSIONS (F#7) ──────────────────────────── */
+/* Every text input, number input, date input, and select control gets a
+   consistent minimum height (38px) and inner font size — without forcing a
+   fixed height, which would collapse padded children (login form, custom
+   widgets, etc.). Multiselect remains free to grow taller for chips. */
 [data-testid="stTextInput"] input,
 [data-testid="stNumberInput"] input,
 [data-testid="stDateInput"] input,
-[data-baseweb="select"] > div {
+[data-testid="stTimeInput"] input {
   min-height: 38px !important;
+  font-size: .82rem !important;
+  line-height: 1.3 !important;
+}
+[data-baseweb="select"] > div,
+[data-testid="stSelectbox"] > div > div,
+[data-testid="stMultiSelect"] > div > div {
+  min-height: 38px !important;
+  font-size: .82rem !important;
+}
+/* Don't apply size enforcement to the login card — its inputs use bespoke
+   padding for the brand styling. */
+.sme-login-shell .stTextInput input,
+.sme-login-shell .stTextInput > div,
+.sme-login-shell .stTextInput > div > div {
+  height: auto !important;
+  min-height: 0 !important;
+}
+/* Standardize input label font + spacing across all input types. */
+[data-testid="stTextInput"] label,
+[data-testid="stNumberInput"] label,
+[data-testid="stDateInput"] label,
+[data-testid="stSelectbox"] label,
+[data-testid="stMultiSelect"] label {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: .68rem !important;
+  font-weight: 600 !important;
+  letter-spacing: .04em !important;
+  margin-bottom: .2rem !important;
 }
 
 /* Sub-headers — consistent top/bottom margins to avoid uneven spacing. */
@@ -829,10 +1054,8 @@ hr { border:none!important; height:1px!important; background:linear-gradient(90d
   box-shadow: 0 30px 60px rgba(0,0,0,.45);
   position: relative; overflow: hidden;
 }
-.sme-login-card::before {
-  content:''; position:absolute; top:0; left:0; right:0; height:3px;
-  background: linear-gradient(90deg, var(--amber3), var(--amber), var(--amber2));
-}
+/* Amber strip on top of login card removed per request. */
+.sme-login-card::before { content: none !important; display: none !important; }
 .sme-login-title {
   font-family:'Inter',sans-serif;
   font-size: 21px; font-weight: 800;
@@ -1018,26 +1241,33 @@ _ADMIN_USER = "admin"
 _ADMIN_PASS = "admin2026"
 
 def _show_login():
-    # Design integration: gradient shell + amber-accent card around the form.
-    # Outer 3-column wrapper horizontally centers the card on wide screens.
-    _outer_l, _outer_c, _outer_r = st.columns([1, 1.4, 1])
+    # Simple, robust login layout — uses Streamlit's native column system to
+    # horizontally center a form. The earlier custom-div card wrapper got
+    # auto-closed by Streamlit's element wrappers, which left the form rendering
+    # outside its container and hidden in some layouts. Plain Streamlit
+    # widgets render reliably across browsers/versions.
+    _outer_l, _outer_c, _outer_r = st.columns([1, 1.6, 1])
     with _outer_c:
-        st.markdown('<div class="sme-login-shell"><div class="sme-login-card" style="text-align:center;">',
-                    unsafe_allow_html=True)
-        _lg_l, _lg_c, _lg_r = st.columns([1, 1, 1])
-        with _lg_c:
-            if os.path.exists(LOGO_PATH):
-                st.image(LOGO_PATH, width=200)
-        st.markdown("""
-        <div style="text-align:center;margin:.6rem 0 1.2rem;">
-          <div style="font-size:38px;line-height:1;"></div>
-          <div class="sme-login-title">Smart Material Estimator</div>
-          <div class="sme-login-sub">Enterprise Platform · v3</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown("<div style='height:6vh;'></div>", unsafe_allow_html=True)
+
+        # Logo (centered)
+        if os.path.exists(LOGO_PATH):
+            _lg_l, _lg_c, _lg_r = st.columns([1, 1, 1])
+            with _lg_c:
+                st.image(LOGO_PATH, width=180)
+
+        st.markdown(
+            "<div style='text-align:center;margin:.8rem 0 1.4rem;'>"
+            "<div class='sme-login-title'>Smart Material Estimator</div>"
+            "<div class='sme-login-sub'>Enterprise Platform · v3</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
         # Wrap inputs in a form so pressing Enter in any field submits.
         with st.form("_login_form", clear_on_submit=False):
-            user = st.text_input("Username", key="_login_user", placeholder="Enter username")
+            user = st.text_input("Username", key="_login_user",
+                                 placeholder="Enter username")
             pwd  = st.text_input("Password", type="password", key="_login_pass",
                                  placeholder="Enter password")
             _submitted = st.form_submit_button(
@@ -1051,11 +1281,13 @@ def _show_login():
                 st.rerun()
             else:
                 st.error("❌ Invalid credentials. Please try again.")
+
         st.markdown(
-            '<div style="text-align:center;margin-top:14px;font-size:11px;'
-            'color:var(--t5);">Demo: admin / admin2026 · Excel/PDF downloads are password protected.</div>',
-            unsafe_allow_html=True)
-        st.markdown('</div></div>', unsafe_allow_html=True)
+            "<div style='text-align:center;margin-top:14px;font-size:11px;"
+            "color:var(--t5);'>Demo: admin / admin2026 · Excel/PDF downloads "
+            "are password protected.</div>",
+            unsafe_allow_html=True,
+        )
 
 if "_authenticated" not in st.session_state:
     st.session_state["_authenticated"] = False
@@ -1125,6 +1357,93 @@ def _refresh_location_order() -> None:
 
 _ensure_locations_table()
 _refresh_location_order()
+
+
+# ── TYPES TABLE (F#6) — mirrors Locations workflow ──────────────────────────
+_DEFAULT_TYPES = [
+    ("Vessel",  1),
+    ("Tank",    2),
+    ("Column",  3),
+    ("Pipe",    4),
+    ("Reactor", 5),
+]
+_DEFAULT_TYPE_NAMES = {n for n, _ in _DEFAULT_TYPES}
+
+
+def _ensure_types_table() -> None:
+    """Create the types table if missing and seed defaults on first run.
+    Also back-fills the table with any distinct Type values already present
+    on the equipment table so existing data continues to drive dropdowns.
+    """
+    if not db_available():
+        return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS types (
+            name        TEXT PRIMARY KEY,
+            sort_order  INTEGER NOT NULL DEFAULT 99,
+            added_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    if cur.execute("SELECT COUNT(*) FROM types").fetchone()[0] == 0:
+        cur.executemany(
+            "INSERT INTO types (name, sort_order) VALUES (?,?)",
+            _DEFAULT_TYPES,
+        )
+        # Backfill: include any existing equipment.type values not in defaults.
+        try:
+            _existing = cur.execute(
+                "SELECT DISTINCT TRIM(type) FROM equipment "
+                "WHERE type IS NOT NULL AND TRIM(type) <> ''"
+            ).fetchall()
+            _exist_set = {r[0] for r in _existing if r[0]}
+            _missing = sorted(_exist_set - _DEFAULT_TYPE_NAMES)
+            _next_order = len(_DEFAULT_TYPES) + 1
+            for _name in _missing:
+                cur.execute(
+                    "INSERT OR IGNORE INTO types (name, sort_order) VALUES (?,?)",
+                    (_name, _next_order),
+                )
+                _next_order += 1
+        except Exception:
+            pass
+    conn.commit(); conn.close()
+
+
+def _refresh_type_order() -> None:
+    """Reload TYPE_ORDER in-place from DB (idempotent)."""
+    if not db_available():
+        return
+    try:
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT name FROM types ORDER BY sort_order, name"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return
+    names = [r["name"] for r in rows] if rows else [n for n, _ in _DEFAULT_TYPES]
+    TYPE_ORDER.clear()
+    TYPE_ORDER.extend(names)
+
+
+def _get_all_types(eq_master_df=None) -> list[str]:
+    """Authoritative Type list: union of TYPE_ORDER (registered) + any types
+    actually present on equipment. Preserves registered order, then appends
+    extras alphabetically."""
+    out = list(TYPE_ORDER)
+    if eq_master_df is not None and "Type" in eq_master_df.columns:
+        extras = sorted({
+            str(t).strip()
+            for t in eq_master_df["Type"].dropna().unique()
+            if str(t).strip() and str(t).strip() not in out
+        })
+        out = out + extras
+    return out
+
+
+_ensure_types_table()
+_refresh_type_order()
 
 
 def _next_order_id(conn) -> str:
@@ -1680,8 +1999,8 @@ def _equipment_report_excel(
     The "Total SQM" column is summed; all other columns are treated as labels.
     """
     SUMMARY_COLS = ["System Code", "System Name", "Total SQM"]
-    # Equipment-summary columns: Equipment Name first, Tag No. second. (Fix #5)
-    EQ_SUMMARY_COLS = ["Equipment Name", "Equipment Tag No.",
+    # Equipment-summary columns: Tag No. first, then Equipment Name (revised F#3).
+    EQ_SUMMARY_COLS = ["Equipment Tag No.", "Equipment Name",
                        "System Name", "Total SQM"]
 
     # Accept legacy column name "Equipment No." for backwards-compat with
@@ -3034,6 +3353,43 @@ _components.html("""
 """, height=0, width=0)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DROPDOWN AUTO-CLOSE (F#7)
+# Streamlit multiselect keeps its menu open after each pick. Listen for clicks
+# on option elements and dispatch an ESC keydown so the menu collapses.
+# ─────────────────────────────────────────────────────────────────────────────
+_components.html("""
+<script>
+(function(){
+  const PARENT = window.parent.document;
+  if (PARENT.__sme_dropdown_autoclose) return;
+  PARENT.__sme_dropdown_autoclose = true;
+
+  function dismiss() {
+    // 1) Press ESC on the currently-focused element (closes BaseWeb menus).
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Escape', code: 'Escape',
+      keyCode: 27, which: 27,
+      bubbles: true, cancelable: true,
+    });
+    (PARENT.activeElement || PARENT.body).dispatchEvent(ev);
+    // 2) Also click the body to lose focus from BaseWeb selects.
+    setTimeout(() => {
+      try { PARENT.activeElement && PARENT.activeElement.blur(); } catch(e){}
+    }, 0);
+  }
+
+  PARENT.addEventListener('click', function(e){
+    // Streamlit/BaseWeb option elements: li[role="option"] inside menu/listbox.
+    const opt = e.target.closest('li[role="option"], [data-baseweb="menu"] li');
+    if (opt) {
+      setTimeout(dismiss, 30);
+    }
+  }, true);
+})();
+</script>
+""", height=0, width=0)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
 tab0, tab1, tab2, tab3, tab_eqrep, tab4, tab_consume, tab5, tab_master = st.tabs([
@@ -3069,10 +3425,12 @@ with tab0:
         sel_locations = st.multiselect(" Location", options=LOCATION_ORDER,
                                         default=LOCATION_ORDER, key="dash_loc")
     with df2_col:
-        # Type options scoped to selected locations
+        # Type options scoped to selected locations, then unioned with the
+        # registered Types table (F#6) so newly-registered types appear even
+        # before any equipment exists for them.
         _type_pool = eq_master[eq_master["Location"].isin(sel_locations)] \
                      if sel_locations else eq_master
-        all_types_d = sorted(_type_pool["Type"].str.strip().dropna().unique().tolist())
+        all_types_d = _get_all_types(_type_pool)
         sel_types = st.multiselect(" Type", options=all_types_d,
                                     default=all_types_d, key="dash_type")
     with df3:
@@ -3670,7 +4028,7 @@ with tab1:
         f_loc  = st.multiselect(" Location", options=LOCATION_ORDER,
                                  default=[], key="t1_loc",
                                  placeholder="All locations")
-        all_types = sorted(eq_master["Type"].str.strip().unique().tolist())
+        all_types = _get_all_types(eq_master)
         f_type = st.multiselect(" Type", options=all_types,
                                  default=[], key="t1_type",
                                  placeholder="All types")
@@ -4860,8 +5218,8 @@ with tab_eqrep:
         "Total_SQM_Original":        "Total SQM",
     })
     _er["Total SQM"] = _er["Total SQM"].round(2)
-    # Equipment Name first, then Equipment Tag No. (Fix #5)
-    _er = _er[["Location", "Type", "Equipment Name", "Equipment Tag No.",
+    # Equipment Tag No. first, then Equipment Name. (Revised order — F#3)
+    _er = _er[["Location", "Type", "Equipment Tag No.", "Equipment Name",
                "System Code", "System Name", "Total SQM"]]
     _er = _er.sort_values(
         ["Location", "Equipment Tag No.", "System Code"],
@@ -4914,12 +5272,12 @@ with tab_eqrep:
             _tag_sqm_total = _tag_grp["Total SQM"].sum()
             _tag_codes_count = len(_tag_grp)
             with st.expander(
-                f"🏷  {str(_tag_name)[:32]}  ·  {_tag}  ·  {_tag_type}  ·  "
+                f"🏷  {_tag}  ·  {str(_tag_name)[:32]}  ·  {_tag_type}  ·  "
                 f"{_tag_codes_count} code(s)  ·  {_tag_sqm_total:,.2f} SQM",
                 expanded=False,
             ):
                 _eq_df_single = _tag_grp[["Location", "Type",
-                                          "Equipment Name", "Equipment Tag No.",
+                                          "Equipment Tag No.", "Equipment Name",
                                           "System Code", "System Name",
                                           "Total SQM"]].reset_index(drop=True)
                 _eq_scheme = _color_map.get(_loc, "overview")
@@ -4993,7 +5351,7 @@ with tab_eqrep:
     st.markdown('<div class="sec-hdr">📥 Download Equipment Report</div>',
                 unsafe_allow_html=True)
     _dl_cols = st.columns(len(LOCATION_ORDER) + 1)
-    _dl_columns = ["Location", "Type", "Equipment Name", "Equipment Tag No.",
+    _dl_columns = ["Location", "Type", "Equipment Tag No.", "Equipment Name",
                    "System Code", "System Name", "Total SQM"]
 
     for _i, _loc in enumerate(LOCATION_ORDER):
@@ -5711,11 +6069,11 @@ with tab_consume:
             ce_loc = st.selectbox(" Location", options=[""] + LOCATION_ORDER,
                                   key="ce_loc", label_visibility="visible")
         with col2:
-            if ce_loc:
-                type_opts = sorted(
-                    eq_master[eq_master["Location"]==ce_loc]["Type"].dropna().unique().tolist())
-            else:
-                type_opts = sorted(eq_master["Type"].dropna().unique().tolist())
+            # Union of registered Types + types actually present on equipment
+            # filtered by location (F#6).
+            _type_pool_ce = (eq_master[eq_master["Location"]==ce_loc]
+                             if ce_loc else eq_master)
+            type_opts = _get_all_types(_type_pool_ce)
             ce_type = st.selectbox(" Type", options=[""] + type_opts,
                                    key="ce_type", label_visibility="visible")
         with col3:
@@ -7171,10 +7529,11 @@ with tab5:
         f_loc_ov = st.multiselect(" Location",
             options=LOCATION_ORDER, default=LOCATION_ORDER, key="ov_loc")
     with ff2:
-        # Type options scoped to selected locations
+        # Type options scoped to selected locations, unioned with registered
+        # Types table (F#6).
         _ov_type_pool = display_master[display_master["Location"].isin(f_loc_ov)] \
                         if f_loc_ov else display_master
-        type_opts_ov = sorted(_ov_type_pool["Type"].dropna().unique().tolist())
+        type_opts_ov = _get_all_types(_ov_type_pool)
         f_type_ov = st.multiselect(" Type",
             options=type_opts_ov, default=type_opts_ov, key="ov_type")
     with ff3:
@@ -7432,6 +7791,7 @@ with tab_master:
             "LINING SYSTEM MATERIAL CONSM",
             "Materials_DetailsAvailable_Qty",
             "➕ Add Location",
+            "➕ Add Type",
         ],
         key="md_table_radio",
         horizontal=True,
@@ -7553,6 +7913,107 @@ with tab_master:
             st.caption("No custom locations to remove. Defaults are protected.")
         st.stop()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # ADD TYPE mode — dedicated branch (mirrors Add Location) — F#6
+    # ══════════════════════════════════════════════════════════════════════════
+    if md_table_sel == "➕ Add Type":
+        st.markdown('<div class="sec-hdr">➕ Add Type</div>',
+                    unsafe_allow_html=True)
+        st.caption(
+            "Types registered here populate every Type dropdown across the "
+            "app (Dashboard filters, Consumption entry, Equipment add form, "
+            "etc.). Adding a type makes it selectable even before any "
+            "equipment of that type exists."
+        )
+
+        _conn_t = get_db()
+        _t_df = pd.read_sql(
+            "SELECT name AS Name, sort_order AS \"Sort Order\", "
+            "added_at AS \"Added At\" FROM types "
+            "ORDER BY sort_order, name", _conn_t)
+        _conn_t.close()
+
+        st.markdown("**Existing Types**")
+        st.dataframe(_t_df, use_container_width=True, hide_index=True,
+                     height=min(280, 60 + len(_t_df) * 35),
+                     key="md_type_existing_tbl")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.form("md_add_type_form", clear_on_submit=True):
+            st.markdown("**New Type**")
+            _tc1, _tc2 = st.columns([2, 1])
+            with _tc1:
+                _new_type_name = st.text_input(
+                    "Type Name *",
+                    placeholder="e.g. Drum",
+                    key="md_new_type_name",
+                )
+            with _tc2:
+                _new_type_sort = st.number_input(
+                    "Sort Order", min_value=1, max_value=999,
+                    value=int(_t_df["Sort Order"].max() + 1) if len(_t_df) else 1,
+                    step=1, key="md_new_type_sort",
+                )
+            _submitted_t = st.form_submit_button(
+                "💾 Save Type", type="primary", use_container_width=False)
+
+        if _submitted_t:
+            _nm = (_new_type_name or "").strip()
+            if not _nm:
+                st.error("❌ Type name is required.")
+            elif _nm in TYPE_ORDER:
+                st.error(f"❌ Type '{_nm}' already exists.")
+            else:
+                try:
+                    _conn_ti = get_db(); _cur_ti = _conn_ti.cursor()
+                    _cur_ti.execute(
+                        "INSERT INTO types (name, sort_order) VALUES (?,?)",
+                        (_nm, int(_new_type_sort)),
+                    )
+                    _conn_ti.commit(); _conn_ti.close()
+                    _refresh_type_order()
+                    st.cache_data.clear()
+                    st.success(f"✅ Type '{_nm}' added. It now appears in every dropdown.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"❌ Database error: {_e}")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        _custom_types = [n for n in TYPE_ORDER if n not in _DEFAULT_TYPE_NAMES]
+        if _custom_types:
+            st.markdown("**Remove a Custom Type**")
+            _tdel_c1, _tdel_c2 = st.columns([2, 1])
+            with _tdel_c1:
+                _del_type = st.selectbox(
+                    "Type to remove",
+                    options=[""] + _custom_types, key="md_del_type",
+                )
+            with _tdel_c2:
+                if st.button("🗑️ Remove", key="md_del_type_btn",
+                             disabled=not _del_type):
+                    _conn_td = get_db()
+                    _ref_n = _conn_td.execute(
+                        "SELECT COUNT(*) FROM equipment WHERE TRIM(type) = ?",
+                        (_del_type,)
+                    ).fetchone()[0]
+                    if _ref_n > 0:
+                        _conn_td.close()
+                        st.error(
+                            f"❌ Cannot remove '{_del_type}': "
+                            f"{_ref_n} equipment record(s) still reference it."
+                        )
+                    else:
+                        _conn_td.execute("DELETE FROM types WHERE name = ?",
+                                         (_del_type,))
+                        _conn_td.commit(); _conn_td.close()
+                        _refresh_type_order()
+                        st.cache_data.clear()
+                        st.success(f"✅ Type '{_del_type}' removed.")
+                        st.rerun()
+        else:
+            st.caption("No custom types to remove. Defaults are protected.")
+        st.stop()
+
     db_table = TABLE_MAP[md_table_sel]
 
     # ── Auto-fill helper for Equipment smart entry ─────────────────────────────
@@ -7637,6 +8098,7 @@ with tab_master:
                         'Equipment Details (shared across all selected codes)</div>',
                         unsafe_allow_html=True)
                     shared_inputs = {}
+                    _type_options_form = _get_all_types(eq_master)
                     for _si in range(0, len(shared_cols), 3):
                         _row_cols = st.columns(3)
                         for _sj, (_sn, _st) in enumerate(shared_cols[_si:_si+3]):
@@ -7645,6 +8107,13 @@ with tab_master:
                                     shared_inputs[_sn] = st.number_input(
                                         _sn.replace("_", " ").title(),
                                         value=0.0, step=0.1, key=f"seq_sh_{_sn}")
+                                elif _sn.lower() == "type":
+                                    # Drive from registered Types table (F#6)
+                                    shared_inputs[_sn] = st.selectbox(
+                                        _sn.replace("_", " ").title(),
+                                        options=[""] + _type_options_form,
+                                        key=f"seq_sh_{_sn}",
+                                    )
                                 else:
                                     shared_inputs[_sn] = st.text_input(
                                         _sn.replace("_", " ").title(),
